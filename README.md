@@ -39,6 +39,12 @@ pip install -r requirements.txt   # inclui o pytest
 python3 -m pytest tests/ -v
 ```
 
+Para gerar os PDFs de evidência de testes (uma execução correta e uma falha simulada, feita só em uma cópia temporária do projeto):
+
+```bash
+python3 gerar_evidencia_testes.py   # grava em evidencias/
+```
+
 ## Estrutura do projeto
 
 ```
