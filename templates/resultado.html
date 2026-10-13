@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Resultado da Calibracao &middot; Schulz</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="container">
+    <header class="app-header">
+      <h1>Resultado da Calibracao</h1>
+      <p class="subtitle">Arquivo processado: <strong>{{ nome_arquivo }}</strong></p>
+    </header>
+
+    <section class="card">
+      <div class="parecer parecer-{{ 'ok' if resultado.parecer == 'APROVADO' else 'erro' }}">
+        <span class="parecer-label">Parecer final</span>
+        <span class="parecer-valor">{{ resultado.parecer }}</span>
+        {% if resultado.total_reprovadas %}
+          <span class="parecer-detalhe">
+            {{ resultado.total_reprovadas }} caracteristica(s) fora da tolerancia
+          </span>
+        {% endif %}
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Caracteristicas avaliadas ({{ resultado.caracteristicas|length }})</h2>
+      <table class="tabela-resultado">
+        <thead>
+          <tr>
+            <th>Caracteristica</th>
+            <th>Nominal</th>
+            <th>Tolerancia</th>
+            <th>Medida 1</th>
+            <th>Medida 2</th>
+            <th>Media</th>
+            <th>Erro sistematico</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in resultado.caracteristicas %}
+          <tr class="{{ 'linha-reprovada' if c.status == 'FORA_DA_TOLERANCIA' else '' }}">
+            <td>{{ c.nome }}</td>
+            <td>{{ c.nominal }}</td>
+            <td>{{ c.tol_menos }} / +{{ c.tol_mais }}</td>
+            <td>{{ c.medida1 }}</td>
+            <td>{{ c.medida2 }}</td>
+            <td>{{ c.media }}</td>
+            <td>{{ c.erro_sistematico }}</td>
+            <td>
+              <span class="badge badge-{{ 'ok' if c.status == 'DENTRO_DA_TOLERANCIA' else 'erro' }}">
+                {{ c.status.replace('_', ' ') }}
+              </span>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <a href="{{ url_for('index') }}" class="btn-secondary">&larr; Processar outra planilha</a>
+  </main>
+</body>
+</html>

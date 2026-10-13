@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+uploads/*.xlsx
+uploads/*.xlsm
+.pytest_cache/
