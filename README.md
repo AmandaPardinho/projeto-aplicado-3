@@ -35,6 +35,7 @@ backend/
     api.py                fn-api: todas as rotas da HTTP API
     ingestao.py           fn-ingestao: evento do S3, ETL, quarentena e persistência
     emissao.py            fn-emissao: número, PDF, Object Lock e certificado imutável
+    site.py               fn-site: entrega o frontend pela Function URL (no lugar do CloudFront)
   tests/                  pytest + moto (DynamoDB e S3 simulados)
   servidor_local.py       roda as Lambdas + frontend sem AWS, para testar as telas
 frontend/                 SPA estática (HTML, CSS e JS puros, sem etapa de build) + PWA
@@ -45,8 +46,8 @@ frontend/                 SPA estática (HTML, CSS e JS puros, sem etapa de buil
                           padrões e auditoria
   sw.js, manifest.webmanifest   PWA instalável no celular (guarda só a casca do app)
 infra/
-  template.yaml           pilha AWS SAM: Cognito, HTTP API, 3 Lambdas, DynamoDB, S3, CloudFront,
-                          fila de falhas, alarmes e orçamento
+  template.yaml           pilha AWS SAM: Cognito, HTTP API, 4 Lambdas (uma entrega o site),
+                          DynamoDB, S3, fila de falhas, alarmes e orçamento
   deploy.sh               build + deploy + carga inicial + config.js + site + etiquetas
   seed.py                 cadastros de exemplo no DynamoDB e usuários de teste no Cognito
   etiquetas.py            folha A4 de etiquetas com o QR da consulta de cada TAG
@@ -76,25 +77,31 @@ O servidor roda as mesmas Lambdas com DynamoDB e S3 simulados em memória. A tel
 
 A consulta do instrumento registra o canal usado: TAG digitado (teclado ou PWA), leitor USB (detectado pela velocidade da digitação) ou câmera (leitura do QR na tela, ou link aberto pelo QR da etiqueta).
 
-## Publicando na AWS
+## Publicando na AWS (AWS Academy)
+
+A pilha está adaptada ao Learner Lab do AWS Academy: região `us-east-1`, Lambdas com a `LabRole` do laboratório (a conta não cria roles IAM) e site entregue pela `fn-site` (a conta não tem acesso ao CloudFront).
 
 Pré-requisitos na máquina de quem publica:
 
-- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), com a credencial configurada (`aws configure`, região `sa-east-1`);
+- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html);
 - [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html);
 - Python 3.12 com a `.venv` do projeto (veja "Rodando os testes").
 
+Credencial, a cada sessão do lab: **Start Lab** → **AWS Details** → **AWS CLI: Show**, e cole o bloco inteiro (com o `aws_session_token`) em `~/.aws/credentials`. A credencial expira quando a sessão acaba; os recursos da pilha continuam lá.
+
 ```bash
-EMAIL_ALERTAS=grupo@exemplo.com infra/deploy.sh
+infra/deploy.sh
 ```
 
 No Windows, pelo PowerShell (mesmas etapas; precisa do Python 3.12 no PATH e da `.venv` criada com `py -3.12 -m venv .venv`):
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -EmailAlertas grupo@exemplo.com
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1
 ```
 
-O script cria ou atualiza a pilha `schulz-pa3`, carrega os cadastros e os usuários de teste, publica o site com o `config.js` gerado e salva uma folha de etiquetas do 703.1208 em `infra/saida/`. No fim ele mostra o endereço da plataforma. As senhas dos usuários de teste ficam em `infra/senhas-teste.txt`, que não vai para o git. `EMAIL_ALERTAS` é opcional: com ele, a pilha cria o orçamento de US$ 1 e os alarmes, e a AWS manda um e-mail pedindo a confirmação da inscrição.
+O script cria ou atualiza a pilha `schulz-pa3`, carrega os cadastros e os usuários de teste, publica o site com o `config.js` gerado e salva uma folha de etiquetas do 703.1208 em `infra/saida/`. No fim ele mostra o endereço da plataforma (`https://<id>.lambda-url.us-east-1.on.aws/`). As senhas dos usuários de teste ficam em `infra/senhas-teste.txt`, que não vai para o git. `EMAIL_ALERTAS` é opcional: com ele, a pilha cria o orçamento de US$ 1 e os alarmes, e a AWS manda um e-mail pedindo a confirmação da inscrição. No AWS Academy, publique sem ele: o laboratório pode não permitir o AWS Budgets e já tem o próprio limite de crédito.
+
+Fora do AWS Academy, numa conta com permissão de IAM, a role vem do parâmetro `RoleLambdas` da pilha (padrão `LabRole`).
 
 **Padrão vencido:** o certificado real do padrão 500.011 venceu em 31/08/2026, e a carga inicial usa essa data. Enquanto ele estiver vencido, o envio de relatórios fica bloqueado (RN04). Na demonstração, o usuário `admin.padrao` atualiza o padrão pela tela Padrões (UC03). Para pular esse passo, publique com `PADRAO_VALIDO_ATE=2027-11-20 infra/deploy.sh`.
 
@@ -113,10 +120,9 @@ python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
 |---|---|---|
 | Cognito | pool sem auto-cadastro, 6 grupos (perfis), atributos `matricula` e `setor` só alteráveis pelo administrador, Hosted UI | 10 mil usuários ativos/mês |
 | API Gateway (HTTP API) | autorizador JWT do Cognito em todas as rotas, CORS só para o endereço do CloudFront, limite de 10 req/s | 1 milhão de chamadas/mês (12 meses) |
-| Lambda | `schulz-fn-api`, `schulz-fn-ingestao` (evento do S3 em `entrada/`), `schulz-fn-emissao`; logs por 14 dias | 1 milhão de invocações/mês |
+| Lambda | `schulz-fn-api`, `schulz-fn-ingestao` (evento do S3 em `entrada/`), `schulz-fn-emissao`, `schulz-fn-site` (Function URL que entrega o site); todas com a `LabRole`; logs por 14 dias | 1 milhão de invocações/mês |
 | DynamoDB | `schulz-certificacao`, tabela única + GSI1, 20 RCU / 20 WCU | 25 RCU / 25 WCU |
-| S3 | entrada (quarentena apaga em 90 dias; originais e logs em 1 ano), certificados (versionamento + Object Lock), site | 5 GB (12 meses) |
-| CloudFront | site com acesso só pelo CloudFront (OAC) e cabeçalhos de segurança | 1 TB/mês |
+| S3 | entrada (quarentena apaga em 90 dias; originais e logs em 1 ano), certificados (versionamento + Object Lock), site (privado, lido pela `fn-site`) | 5 GB (12 meses) |
 | SQS | fila de falhas da ingestão | 1 milhão de requisições/mês |
 | CloudWatch, SNS, Budgets | 3 alarmes e orçamento de US$ 1, se houver `EMAIL_ALERTAS` | 10 alarmes, 2 orçamentos |
 
@@ -127,14 +133,28 @@ python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
 | Object Lock em modo COMPLIANCE pelo prazo legal | modo GOVERNANCE, 1 dia (`DiasRetencaoCertificados`) | permitir limpar a conta depois da avaliação |
 | MFA para signatários | desligado | simplificar a demonstração |
 | alarmes completos e fn-contencao | 3 alarmes, sem contenção automática | escopo da PoC |
-| domínio próprio | endereço `*.cloudfront.net` | sem custo de domínio |
+| domínio próprio | endereço `*.lambda-url.us-east-1.on.aws` | sem custo de domínio |
+| região `sa-east-1` | `us-east-1` | o AWS Academy só libera `us-east-1` e `us-west-2` |
+| role de menor privilégio por função | `LabRole` do laboratório em todas | o AWS Academy não permite criar roles IAM; cada função passa a ter mais permissão do que precisa |
+| site por S3 + CloudFront (OAC, cache de borda) | `fn-site` lê o bucket privado e entrega por Function URL, com os mesmos cabeçalhos de segurança | o AWS Academy bloqueia o CloudFront; sem cache de borda, o que não pesa na PoC |
+
+### Se o deploy falhar
+
+- **Pilha em `ROLLBACK_COMPLETE`:** veja o primeiro evento com falha no console (CloudFormation → `schulz-pa3` → Events), apague a pilha (`aws cloudformation delete-stack --stack-name schulz-pa3`) e publique de novo.
+- **`ExpiredToken`:** a sessão do lab acabou; copie a credencial de novo.
+- **Endereço do site responde `Forbidden`:** a Function URL pública pode precisar também da permissão `lambda:InvokeFunction`:
+
+  ```bash
+  aws lambda add-permission --function-name schulz-fn-site --statement-id url-publica-invoke \
+    --action lambda:InvokeFunction --principal "*" --invoked-via-function-url
+  ```
 
 ### Removendo
 
 ```bash
-aws s3 rm s3://schulz-web-<conta>-sa-east-1 --recursive
-aws s3 rm s3://schulz-entrada-<conta>-sa-east-1 --recursive
-aws cloudformation delete-stack --stack-name schulz-pa3 --region sa-east-1
+aws s3 rm s3://schulz-web-<conta>-us-east-1 --recursive
+aws s3 rm s3://schulz-entrada-<conta>-us-east-1 --recursive
+aws cloudformation delete-stack --stack-name schulz-pa3 --region us-east-1
 ```
 
 O bucket de certificados fica retido de propósito. Ele pode ser esvaziado e apagado pelo console depois que a retenção do Object Lock vencer.

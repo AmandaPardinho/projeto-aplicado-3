@@ -1,5 +1,5 @@
 // SPA: login, menu por perfil e roteamento por hash (#/rota/parametros).
-// O hash funciona em qualquer hospedagem estatica (S3 + CloudFront) e e o
+// O hash funciona em qualquer hospedagem estatica (S3 + CloudFront, fn-site) e e o
 // formato do link impresso no QR do certificado: #/consulta/<TAG>.
 
 import { api } from "./api.js";

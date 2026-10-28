@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publica a PoC na AWS (sa-east-1), do zero ou por cima de uma versao anterior.
+# Publica a PoC na AWS (us-east-1, AWS Academy), do zero ou por cima de uma versao anterior.
 #
 #   infra/deploy.sh                        # pilha + carga inicial + site
 #   EMAIL_ALERTAS=voce@exemplo.com infra/deploy.sh
@@ -12,12 +12,12 @@
 #   1. sam build + sam deploy do infra/template.yaml
 #   2. seed.py: cadastros no DynamoDB e usuarios de teste no Cognito
 #   3. config.js com a URL da API e os dados do Cognito, gerado das saidas
-#   4. frontend + Report de exemplo no bucket do site; invalida o CloudFront
+#   4. frontend + Report de exemplo no bucket do site (entregue pela fn-site)
 #   5. etiquetas com QR do 703.1208 em infra/saida/
 set -euo pipefail
 
 PILHA="${PILHA:-schulz-pa3}"
-REGIAO="${REGIAO:-sa-east-1}"
+REGIAO="${REGIAO:-us-east-1}"
 EMAIL_ALERTAS="${EMAIL_ALERTAS:-}"
 PADRAO_VALIDO_ATE="${PADRAO_VALIDO_ATE:-2026-08-31}"
 
@@ -31,7 +31,7 @@ for programa in aws sam; do
   command -v "$programa" >/dev/null || { echo "Falta o programa '$programa' (veja o README)." >&2; exit 1; }
 done
 aws sts get-caller-identity --query Account --output text >/dev/null \
-  || { echo "Credencial da AWS nao configurada (aws configure)." >&2; exit 1; }
+  || { echo "Credencial da AWS ausente ou expirada (AWS Academy: copie de novo o bloco de AWS Details para ~/.aws/credentials)." >&2; exit 1; }
 
 echo "==> 1/5 Pilha $PILHA em $REGIAO"
 sam build --template-file infra/template.yaml --build-dir .aws-sam/build
@@ -51,7 +51,6 @@ URL_API="$(saida UrlApi)"
 COGNITO_DOMINIO="$(saida CognitoDominio)"
 COGNITO_CLIENTE="$(saida CognitoClientId)"
 BUCKET_SITE="$(saida BucketSite)"
-DISTRIBUICAO="$(saida DistribuicaoId)"
 
 echo "==> 2/5 Carga inicial"
 "$PYTHON" infra/seed.py --pilha "$PILHA" --regiao "$REGIAO" --padrao-valido-ate "$PADRAO_VALIDO_ATE"
@@ -83,8 +82,6 @@ aws s3 sync "$SITE/" "s3://$BUCKET_SITE/" --delete --region "$REGIAO" \
 aws s3 cp "s3://$BUCKET_SITE/manifest.webmanifest" "s3://$BUCKET_SITE/manifest.webmanifest" \
   --region "$REGIAO" --metadata-directive REPLACE --cache-control "no-cache" \
   --content-type "application/manifest+json" >/dev/null
-aws cloudfront create-invalidation --distribution-id "$DISTRIBUICAO" --paths "/*" \
-  --query Invalidation.Id --output text >/dev/null
 
 echo "==> 5/5 Etiquetas"
 "$PYTHON" infra/etiquetas.py --url "$URL_APP" --saida "$SAIDA/etiquetas-703.1208.pdf" 703.1208
@@ -92,7 +89,6 @@ echo "==> 5/5 Etiquetas"
 cat <<FIM
 
 Pronto. Plataforma em: $URL_APP
-  (na primeira publicacao o CloudFront pode levar alguns minutos para responder)
 Usuarios e senhas de teste: infra/senhas-teste.txt
 Etiquetas para imprimir:   $SAIDA/etiquetas-703.1208.pdf
 FIM

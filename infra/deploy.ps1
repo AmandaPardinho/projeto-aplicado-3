@@ -1,5 +1,5 @@
 <#
-Publica a PoC na AWS (sa-east-1) a partir do Windows. Faz o mesmo que o
+Publica a PoC na AWS (us-east-1, AWS Academy) a partir do Windows. Faz o mesmo que o
 infra/deploy.sh, do zero ou por cima de uma versao anterior.
 
     powershell -ExecutionPolicy Bypass -File infra\deploy.ps1
@@ -14,12 +14,12 @@ Passos:
   1. sam build + sam deploy do infra\template.yaml
   2. seed.py: cadastros no DynamoDB e usuarios de teste no Cognito
   3. config.js com a URL da API e os dados do Cognito, gerado das saidas
-  4. frontend + Report de exemplo no bucket do site; invalida o CloudFront
+  4. frontend + Report de exemplo no bucket do site (entregue pela fn-site)
   5. etiquetas com QR do 703.1208 em infra\saida\
 #>
 param(
     [string]$Pilha = $(if ($env:PILHA) { $env:PILHA } else { "schulz-pa3" }),
-    [string]$Regiao = $(if ($env:REGIAO) { $env:REGIAO } else { "sa-east-1" }),
+    [string]$Regiao = $(if ($env:REGIAO) { $env:REGIAO } else { "us-east-1" }),
     [string]$EmailAlertas = $env:EMAIL_ALERTAS,
     [string]$PadraoValidoAte = $(if ($env:PADRAO_VALIDO_ATE) { $env:PADRAO_VALIDO_ATE } else { "2026-08-31" })
 )
@@ -54,7 +54,7 @@ foreach ($programa in "aws", "sam") {
     }
 }
 & aws sts get-caller-identity --query Account --output text | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Credencial da AWS nao configurada (aws configure)." }
+if ($LASTEXITCODE -ne 0) { throw "Credencial da AWS ausente ou expirada (AWS Academy: copie de novo o bloco de AWS Details para ~\.aws\credentials)." }
 
 Write-Host "==> 1/5 Pilha $Pilha em $Regiao"
 Executar sam build --template-file infra/template.yaml --build-dir .aws-sam/build
@@ -76,7 +76,6 @@ $UrlApi = SaidaDaPilha UrlApi
 $CognitoDominio = SaidaDaPilha CognitoDominio
 $CognitoCliente = SaidaDaPilha CognitoClientId
 $BucketSite = SaidaDaPilha BucketSite
-$Distribuicao = SaidaDaPilha DistribuicaoId
 
 Write-Host "==> 2/5 Carga inicial"
 Executar $Python infra/seed.py --pilha $Pilha --regiao $Regiao --padrao-valido-ate $PadraoValidoAte
@@ -109,8 +108,6 @@ try {
     Executar aws s3 cp "s3://$BucketSite/manifest.webmanifest" "s3://$BucketSite/manifest.webmanifest" `
         --region $Regiao --metadata-directive REPLACE --cache-control "no-cache" `
         --content-type "application/manifest+json" | Out-Null
-    Executar aws cloudfront create-invalidation --distribution-id $Distribuicao --paths "/*" `
-        --query Invalidation.Id --output text | Out-Null
 }
 finally {
     Remove-Item -Recurse -Force -Path $Site -ErrorAction SilentlyContinue
@@ -122,7 +119,6 @@ Executar $Python infra/etiquetas.py --url $UrlApp --saida $Etiquetas 703.1208
 
 Write-Host ""
 Write-Host "Pronto. Plataforma em: $UrlApp"
-Write-Host "  (na primeira publicacao o CloudFront pode levar alguns minutos para responder)"
 Write-Host "Usuarios e senhas de teste: infra\senhas-teste.txt"
 Write-Host "Etiquetas para imprimir:   infra\saida\etiquetas-703.1208.pdf"
 if ($PadraoValidoAte -lt (Get-Date -Format "yyyy-MM-dd")) {

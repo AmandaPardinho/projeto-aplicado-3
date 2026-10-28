@@ -105,6 +105,24 @@ def test_usuario_nao_altera_matricula_nem_setor(template):
     assert "aws.cognito.signin.user.admin" not in cliente["AllowedOAuthScopes"]
 
 
+def test_funcoes_usam_a_role_do_laboratorio(template):
+    # AWS Academy: a conta nao cria roles IAM; Policies faria o SAM criar uma
+    for nome, funcao in _funcoes(template).items():
+        assert "Policies" not in funcao["Properties"], nome
+        assert "RoleLambdas" in funcao["Properties"]["Role"]["Sub"], nome
+
+
+def test_sem_cloudfront_e_site_pela_function_url(template):
+    # AWS Academy bloqueia o CloudFront
+    tipos = {r["Type"] for r in template["Resources"].values()}
+    assert not any(t.startswith("AWS::CloudFront::") for t in tipos)
+    fn_site = _funcoes(template)["FnSite"]["Properties"]
+    assert fn_site["FunctionUrlConfig"] == {"AuthType": "NONE"}
+    # URL_APP so na fn-emissao: na fn-site seria dependencia circular
+    assert "URL_APP" not in template["Globals"]["Function"]["Environment"]["Variables"]
+    assert "URL_APP" in _funcoes(template)["FnEmissao"]["Properties"]["Environment"]["Variables"]
+
+
 def test_urls_pre_assinadas_regionais_e_sigv4():
     from handlers.api import _cliente_s3
 

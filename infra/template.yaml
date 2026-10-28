@@ -4,9 +4,16 @@ Description: >
   Schulz - certificados de calibracao (Projeto Aplicado III, Grupo 4).
   Arquitetura da AV2: Cognito, HTTP API, fn-api / fn-ingestao / fn-emissao,
   DynamoDB em tabela unica, S3 (entrada, certificados com Object Lock e site)
-  e CloudFront. Dimensionado para a camada gratuita.
+  e fn-site (Function URL no lugar do CloudFront, que o AWS Academy bloqueia).
+  Dimensionado para a camada gratuita.
 
 Parameters:
+  RoleLambdas:
+    Type: String
+    Default: LabRole
+    Description: >
+      Role IAM ja existente usada pelas Lambdas. O AWS Academy nao deixa criar
+      roles, entao as funcoes usam a LabRole do laboratorio.
   EmailAlertas:
     Type: String
     Default: ""
@@ -37,7 +44,6 @@ Globals:
         TABELA: !Ref Tabela
         BUCKET_ENTRADA: !Sub schulz-entrada-${AWS::AccountId}-${AWS::Region}
         BUCKET_CERTIFICADOS: !Sub schulz-certificados-${AWS::AccountId}-${AWS::Region}
-        URL_APP: !Sub https://${Distribuicao.DomainName}/
         MARCA_PROVA_DE_CONCEITO: "1"
 
 Resources:
@@ -89,7 +95,8 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedMethods: [POST]
-            AllowedOrigins: [!Sub "https://${Distribuicao.DomainName}"]
+            AllowedOrigins:
+              - !Sub ["https://${Host}", { Host: !Select [2, !Split ["/", !GetAtt FnSiteUrl.FunctionUrl]] }]
             AllowedHeaders: ["*"]
             MaxAge: 3000
       LifecycleConfiguration:
@@ -173,12 +180,13 @@ Resources:
       # proprios atributos pela API do Cognito
       AllowedOAuthScopes: [openid, email, profile]
       SupportedIdentityProviders: [COGNITO]
+      # FunctionUrl ja termina em "/"
       CallbackURLs:
-        - !Sub https://${Distribuicao.DomainName}/
-        - !Sub https://${Distribuicao.DomainName}/index.html
+        - !GetAtt FnSiteUrl.FunctionUrl
+        - !Sub ["${Url}index.html", { Url: !GetAtt FnSiteUrl.FunctionUrl }]
       LogoutURLs:
-        - !Sub https://${Distribuicao.DomainName}/
-        - !Sub https://${Distribuicao.DomainName}/index.html
+        - !GetAtt FnSiteUrl.FunctionUrl
+        - !Sub ["${Url}index.html", { Url: !GetAtt FnSiteUrl.FunctionUrl }]
       # custom:matricula e custom:setor decidem permissoes (RN05, setor):
       # so o administrador altera
       ReadAttributes: [email, email_verified, name, custom:matricula, custom:setor]
@@ -218,7 +226,8 @@ Resources:
     Properties:
       StageName: $default
       CorsConfiguration:
-        AllowOrigins: [!Sub "https://${Distribuicao.DomainName}"]
+        AllowOrigins:
+          - !Sub ["https://${Host}", { Host: !Select [2, !Split ["/", !GetAtt FnSiteUrl.FunctionUrl]] }]
         AllowMethods: [GET, POST, PUT, OPTIONS]
         AllowHeaders: [authorization, content-type]
         MaxAge: 600
@@ -245,18 +254,10 @@ Resources:
       Environment:
         Variables:
           FUNCAO_EMISSAO: !Ref FnEmissao
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
-        - LambdaInvokePolicy: { FunctionName: !Ref FnEmissao }
-        - Statement:
-            # presigned POST (upload) e GET (download) sao assinados com a
-            # credencial desta funcao
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub arn:aws:s3:::schulz-entrada-${AWS::AccountId}-${AWS::Region}/entrada/*
-            - Effect: Allow
-              Action: [s3:GetObject, s3:GetObjectVersion]
-              Resource: !Sub arn:aws:s3:::schulz-certificados-${AWS::AccountId}-${AWS::Region}/certificados/*
+      # AWS Academy: role do laboratorio no lugar da role de menor privilegio
+      # (DynamoDB CRUD, invocar a fn-emissao, PutObject em entrada/ e
+      # GetObject em certificados/, que assinam o presigned POST e GET)
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${RoleLambdas}
       Events:
         Me:              { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /me } }
         PedirUpload:     { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: POST, Path: /calibracoes/upload } }
@@ -286,12 +287,9 @@ Resources:
       DeadLetterQueue:
         Type: SQS
         TargetArn: !GetAtt FilaFalhas.Arn
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
-        - Statement:
-            - Effect: Allow
-              Action: [s3:GetObject, s3:PutObject]
-              Resource: !Sub arn:aws:s3:::schulz-entrada-${AWS::AccountId}-${AWS::Region}/*
+      # AWS Academy: role do laboratorio (seria DynamoDB CRUD, GetObject e
+      # PutObject no bucket de entrada e SendMessage na fila de falhas)
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${RoleLambdas}
       Events:
         RelatorioRecebido:
           Type: S3
@@ -311,12 +309,31 @@ Resources:
       Handler: handlers.emissao.handler
       MemorySize: 1024
       Timeout: 25
-      Policies:
-        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
-        - Statement:
-            - Effect: Allow
-              Action: s3:PutObject
-              Resource: !Sub arn:aws:s3:::schulz-certificados-${AWS::AccountId}-${AWS::Region}/certificados/*
+      Environment:
+        Variables:
+          # Endereco do QR Code impresso no certificado. Fica so aqui, e nao
+          # em Globals, porque a fn-site nao pode depender da propria URL.
+          URL_APP: !GetAtt FnSiteUrl.FunctionUrl
+      # AWS Academy: role do laboratorio (seria DynamoDB CRUD e PutObject em
+      # certificados/)
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${RoleLambdas}
+
+  # Entrega o frontend no lugar do CloudFront (bloqueado no AWS Academy). A
+  # Function URL publica gera o recurso FnSiteUrl, com HTTPS, exigido pelo
+  # callback do Cognito, pela camera e pelo PWA.
+  FnSite:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: schulz-fn-site
+      Handler: handlers.site.handler
+      MemorySize: 256
+      Timeout: 10
+      Environment:
+        Variables:
+          BUCKET_SITE: !Ref BucketSite
+      Role: !Sub arn:aws:iam::${AWS::AccountId}:role/${RoleLambdas}
+      FunctionUrlConfig:
+        AuthType: NONE
 
   LogsApi:
     Type: AWS::Logs::LogGroup
@@ -327,6 +344,9 @@ Resources:
   LogsEmissao:
     Type: AWS::Logs::LogGroup
     Properties: { LogGroupName: !Sub "/aws/lambda/${FnEmissao}", RetentionInDays: 14 }
+  LogsSite:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${FnSite}", RetentionInDays: 14 }
 
   FilaFalhas:
     Type: AWS::SQS::Queue
@@ -335,7 +355,7 @@ Resources:
       MessageRetentionPeriod: 1209600     # 14 dias
       SqsManagedSseEnabled: true
 
-  # --- Site (S3 privado + CloudFront) ----------------------------------------
+  # --- Site (S3 privado, lido pela fn-site) ----------------------------------
 
   BucketSite:
     Type: AWS::S3::Bucket
@@ -346,51 +366,6 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
-
-  AcessoSite:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub schulz-web-${AWS::AccountId}
-        OriginAccessControlOriginType: s3
-        SigningBehavior: always
-        SigningProtocol: sigv4
-
-  PoliticaSite:
-    Type: AWS::S3::BucketPolicy
-    Properties:
-      Bucket: !Ref BucketSite
-      PolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal: { Service: cloudfront.amazonaws.com }
-            Action: s3:GetObject
-            Resource: !Sub ${BucketSite.Arn}/*
-            Condition:
-              StringEquals:
-                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribuicao}
-
-  Distribuicao:
-    Type: AWS::CloudFront::Distribution
-    Properties:
-      DistributionConfig:
-        Comment: Schulz - plataforma de certificados (PoC)
-        Enabled: true
-        HttpVersion: http2
-        DefaultRootObject: index.html
-        PriceClass: PriceClass_All        # sa-east-1: inclui a borda de Sao Paulo
-        Origins:
-          - Id: site
-            DomainName: !GetAtt BucketSite.RegionalDomainName
-            OriginAccessControlId: !GetAtt AcessoSite.Id
-            S3OriginConfig: { OriginAccessIdentity: "" }
-        DefaultCacheBehavior:
-          TargetOriginId: site
-          ViewerProtocolPolicy: redirect-to-https
-          Compress: true
-          AllowedMethods: [GET, HEAD]
-          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
-          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
 
   # --- Alarmes e orcamento ---------------------------------------------------
 
@@ -473,8 +448,8 @@ Resources:
 
 Outputs:
   UrlApp:
-    Description: Endereco da plataforma (CloudFront)
-    Value: !Sub https://${Distribuicao.DomainName}/
+    Description: Endereco da plataforma (Function URL da fn-site)
+    Value: !GetAtt FnSiteUrl.FunctionUrl
   UrlApi:
     Value: !GetAtt Api.ApiEndpoint
   CognitoDominio:
@@ -491,5 +466,3 @@ Outputs:
     Value: !Ref BucketEntrada
   BucketCertificados:
     Value: !Ref BucketCertificados
-  DistribuicaoId:
-    Value: !Ref Distribuicao

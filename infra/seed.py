@@ -137,7 +137,7 @@ def gravar_senhas(senhas: dict, url_app: str) -> None:
 def main():
     argumentos = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     argumentos.add_argument("--pilha", default="schulz-pa3")
-    argumentos.add_argument("--regiao", default="sa-east-1")
+    argumentos.add_argument("--regiao", default="us-east-1")
     argumentos.add_argument("--padrao-valido-ate", default="2026-08-31",
                             help="data_proxima_calibracao do 500.011 (a real e 2026-08-31, "
                                  "ja vencida: atualize pela tela de padroes ou passe uma data futura)")

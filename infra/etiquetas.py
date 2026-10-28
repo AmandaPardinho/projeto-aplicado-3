@@ -1,7 +1,7 @@
 """
 Etiquetas com QR Code para colar nos instrumentos.
 
-    python infra/etiquetas.py --url https://dxxxx.cloudfront.net/ 703.1208 [TAG ...]
+    python infra/etiquetas.py --url https://xxxx.lambda-url.us-east-1.on.aws/ 703.1208 [TAG ...]
 
 O QR leva a <url>#/consulta/<TAG>, o mesmo link impresso no certificado. Quem
 le com a camera do celular cai na consulta do instrumento, depois do login.
