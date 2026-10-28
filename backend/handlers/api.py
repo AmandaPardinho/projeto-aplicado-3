@@ -27,6 +27,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from schulz import auditoria, revisao
@@ -54,9 +55,19 @@ class Contexto:
     def __init__(self, repositorio=None, s3=None, emitir: Callable | None = None,
                  hoje: date | None = None):
         self.repositorio = repositorio or Repositorio()
-        self.s3 = s3 or boto3.client("s3")
+        self.s3 = s3 or _cliente_s3()
         self.emitir = emitir or _invocar_emissao
         self.hoje = hoje or date.today()
+
+
+def _cliente_s3():
+    """Cliente para as URLs pre-assinadas: endpoint regional e SigV4. O padrao
+    do boto3 aponta para s3.amazonaws.com, que redireciona buckets novos fora
+    de us-east-1 (o navegador nao segue o redirect no upload) e assina o GET
+    com SigV2."""
+    regiao = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION", "sa-east-1")
+    return boto3.client("s3", region_name=regiao, endpoint_url=f"https://s3.{regiao}.amazonaws.com",
+                        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}))
 
 
 def _invocar_emissao(payload: dict) -> dict:

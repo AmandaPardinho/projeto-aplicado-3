@@ -25,7 +25,6 @@ import mimetypes
 import os
 import re
 import sys
-from datetime import datetime
 from email.parser import BytesParser
 from email.policy import default as politica_email
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -35,7 +34,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 RAIZ = Path(__file__).resolve().parent
 FRONTEND = RAIZ.parent / "frontend"
 sys.path.insert(0, str(RAIZ))
-sys.path.insert(0, str(RAIZ / "tests"))  # gerador de relatorios no layout do Calypso
+sys.path.insert(0, str(RAIZ.parent / "infra"))  # report_exemplo: Report do Calypso gerado na hora
 
 os.environ.update({
     "AWS_ACCESS_KEY_ID": "local",
@@ -51,14 +50,9 @@ os.environ.pop("FUNCAO_EMISSAO", None)  # emissao roda no mesmo processo
 import boto3  # noqa: E402
 from moto import mock_aws  # noqa: E402
 
-USUARIOS = {
-    "tecnico.exemplo": {"grupos": ["tecnico"], "matricula": "1001", "setor": "usinagem-1"},
-    "revisor.exemplo": {"grupos": ["revisor"]},
-    "signatario.exemplo": {"grupos": ["revisor", "signatario"], "matricula": "1002"},
-    "admin.padrao": {"grupos": ["admin_padrao"]},
-    "consulta.usinagem": {"grupos": ["consulta"], "setor": "usinagem-1"},
-    "auditor.exemplo": {"grupos": ["auditor"]},
-}
+from report_exemplo import report_exemplo  # noqa: E402
+from schulz.cadastros_exemplo import USUARIOS_TESTE as USUARIOS  # noqa: E402
+
 
 TAMANHO_MAXIMO = 5 * 1024 * 1024
 TIPOS = {".js": "text/javascript", ".webmanifest": "application/manifest+json",
@@ -73,15 +67,6 @@ def _rotas():
         padrao = re.sub(r"\{(\w+)\}", r"(?P<\1>[^/]+)", caminho)
         rotas.append((metodo, re.compile(f"^{padrao}$"), chave))
     return rotas
-
-
-def report_exemplo() -> bytes:
-    """Report do 703.1208 com a hora atual: cada download tem SHA-256 novo,
-    entao pode ser enviado varias vezes sem cair no RH17."""
-    from report_calypso import gerar_report
-    agora = datetime.now()
-    return gerar_report(data=agora.replace(hour=0, minute=0, second=0, microsecond=0),
-                        hora=agora.time().replace(microsecond=0))
 
 
 def preparar(carregar_exemplo: bool):

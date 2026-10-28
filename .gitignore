@@ -5,3 +5,8 @@ venv/
 uploads/*.xlsx
 uploads/*.xlsm
 .pytest_cache/
+
+# Deploy (infra/deploy.sh)
+.aws-sam/
+infra/saida/
+infra/senhas-teste.txt

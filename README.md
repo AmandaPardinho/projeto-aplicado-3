@@ -11,7 +11,7 @@ Prova de conceito serverless na AWS (camada gratuita) que recebe o relatório br
 |---|---|---|
 | 1 — Backend | parser do Calypso, GUM, banda de guarda, PDF, fn-api / fn-ingestao / fn-emissao, testes | concluída |
 | 2 — Frontend | SPA + PWA com login, revisão, emissão, consulta por TAG/QR e trilha de auditoria | concluída |
-| 3 — Infraestrutura | template AWS SAM, `deploy.sh`, carga inicial | a fazer |
+| 3 — Infraestrutura | template AWS SAM, `deploy.sh`, carga inicial, etiquetas com QR | pronta; falta publicar na conta do grupo |
 | 4 — Documentação | matriz de rastreabilidade, roteiro de deploy, relatório e vídeo | a fazer |
 
 O MVP Flask da AV3 está em [`legado-av3/`](legado-av3/) e na tag `av3`.
@@ -44,6 +44,13 @@ frontend/                 SPA estática (HTML, CSS e JS puros, sem etapa de buil
   js/telas/               envio, fila, revisão/emissão, quarentena, consulta, certificado,
                           padrões e auditoria
   sw.js, manifest.webmanifest   PWA instalável no celular (guarda só a casca do app)
+infra/
+  template.yaml           pilha AWS SAM: Cognito, HTTP API, 3 Lambdas, DynamoDB, S3, CloudFront,
+                          fila de falhas, alarmes e orçamento
+  deploy.sh               build + deploy + carga inicial + config.js + site + etiquetas
+  seed.py                 cadastros de exemplo no DynamoDB e usuários de teste no Cognito
+  etiquetas.py            folha A4 de etiquetas com o QR da consulta de cada TAG
+  report_exemplo.py       Report do Calypso de exemplo (703.1208) para testar o envio
 docs/
   achados-nas-planilhas.md  erros encontrados nas planilhas da Schulz
 legado-av3/               MVP Flask entregue na AV3
@@ -68,6 +75,63 @@ O servidor roda as mesmas Lambdas com DynamoDB e S3 simulados em memória. A tel
 | Auditor | trilha de auditoria por dia, com usuário, ação, alvo e canal |
 
 A consulta do instrumento registra o canal usado: TAG digitado (teclado ou PWA), leitor USB (detectado pela velocidade da digitação) ou câmera (leitura do QR na tela, ou link aberto pelo QR da etiqueta).
+
+## Publicando na AWS
+
+Pré-requisitos na máquina de quem publica:
+
+- [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html), com a credencial configurada (`aws configure`, região `sa-east-1`);
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html);
+- Python 3.12 com a `.venv` do projeto (veja "Rodando os testes").
+
+```bash
+EMAIL_ALERTAS=grupo@exemplo.com infra/deploy.sh
+```
+
+O script cria ou atualiza a pilha `schulz-pa3`, carrega os cadastros e os usuários de teste, publica o site com o `config.js` gerado e salva uma folha de etiquetas do 703.1208 em `infra/saida/`. No fim ele mostra o endereço da plataforma. As senhas dos usuários de teste ficam em `infra/senhas-teste.txt`, que não vai para o git. `EMAIL_ALERTAS` é opcional: com ele, a pilha cria o orçamento de US$ 1 e os alarmes, e a AWS manda um e-mail pedindo a confirmação da inscrição.
+
+**Padrão vencido:** o certificado real do padrão 500.011 venceu em 31/08/2026, e a carga inicial usa essa data. Enquanto ele estiver vencido, o envio de relatórios fica bloqueado (RN04). Na demonstração, o usuário `admin.padrao` atualiza o padrão pela tela Padrões (UC03). Para pular esse passo, publique com `PADRAO_VALIDO_ATE=2027-11-20 infra/deploy.sh`.
+
+Rodar o script de novo atualiza a pilha e o site sem apagar dados. Cadastros e usuários que já existem ficam como estão (`infra/seed.py --help` mostra como sobrescrever ou trocar senhas).
+
+Outros comandos:
+
+```bash
+python infra/etiquetas.py --url https://<seu-endereco>.cloudfront.net/ 703.1208 700.0001
+python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
+```
+
+### O que a pilha cria
+
+| Recurso | Configuração | Camada gratuita |
+|---|---|---|
+| Cognito | pool sem auto-cadastro, 6 grupos (perfis), atributos `matricula` e `setor` só alteráveis pelo administrador, Hosted UI | 10 mil usuários ativos/mês |
+| API Gateway (HTTP API) | autorizador JWT do Cognito em todas as rotas, CORS só para o endereço do CloudFront, limite de 10 req/s | 1 milhão de chamadas/mês (12 meses) |
+| Lambda | `schulz-fn-api`, `schulz-fn-ingestao` (evento do S3 em `entrada/`), `schulz-fn-emissao`; logs por 14 dias | 1 milhão de invocações/mês |
+| DynamoDB | `schulz-certificacao`, tabela única + GSI1, 20 RCU / 20 WCU | 25 RCU / 25 WCU |
+| S3 | entrada (quarentena apaga em 90 dias), certificados (versionamento + Object Lock), site | 5 GB (12 meses) |
+| CloudFront | site com acesso só pelo CloudFront (OAC) e cabeçalhos de segurança | 1 TB/mês |
+| SQS | fila de falhas da ingestão | 1 milhão de requisições/mês |
+| CloudWatch, SNS, Budgets | 3 alarmes e orçamento de US$ 1, se houver `EMAIL_ALERTAS` | 10 alarmes, 2 orçamentos |
+
+### Diferenças em relação à AV2
+
+| AV2 | PoC | Motivo |
+|---|---|---|
+| Object Lock em modo COMPLIANCE pelo prazo legal | modo GOVERNANCE, 1 dia (`DiasRetencaoCertificados`) | permitir limpar a conta depois da avaliação |
+| MFA para signatários | desligado | simplificar a demonstração |
+| alarmes completos e fn-contencao | 3 alarmes, sem contenção automática | escopo da PoC |
+| domínio próprio | endereço `*.cloudfront.net` | sem custo de domínio |
+
+### Removendo
+
+```bash
+aws s3 rm s3://schulz-web-<conta>-sa-east-1 --recursive
+aws s3 rm s3://schulz-entrada-<conta>-sa-east-1 --recursive
+aws cloudformation delete-stack --stack-name schulz-pa3 --region sa-east-1
+```
+
+O bucket de certificados fica retido de propósito. Ele pode ser esvaziado e apagado pelo console depois que a retenção do Object Lock vencer.
 
 ## Rodando os testes
 

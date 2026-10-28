@@ -16,6 +16,18 @@ TAG_EXEMPLO = "703.1208"
 PADRAO_MMC = "500.011"
 TECNICO_EXEMPLO = "Tecnico Exemplo"  # nome que aparece no Report gerado nos testes
 
+# Usuarios de teste, um por perfil: viram usuarios do Cognito no seed e a
+# lista da tela de login no servidor local. Matricula liga o login ao
+# metrologista (RN05); setor limita o que o perfil consulta ve (AV2 4.2.4).
+USUARIOS_TESTE = {
+    "tecnico.exemplo": {"grupos": ["tecnico"], "matricula": "1001", "setor": "usinagem-1"},
+    "revisor.exemplo": {"grupos": ["revisor"]},
+    "signatario.exemplo": {"grupos": ["revisor", "signatario"], "matricula": "1002"},
+    "admin.padrao": {"grupos": ["admin_padrao"]},
+    "consulta.usinagem": {"grupos": ["consulta"], "setor": "usinagem-1"},
+    "auditor.exemplo": {"grupos": ["auditor"]},
+}
+
 
 def instrumento_703_1208() -> dict:
     return {

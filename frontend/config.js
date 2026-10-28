@@ -1,5 +1,6 @@
-// Configuracao do ambiente. O deploy (Fase 3) sobrescreve este arquivo com
-// os valores reais da pilha; o servidor_local.py serve a versao de modo local.
+// Configuracao do ambiente. Este arquivo so tem marcadores: o infra/deploy.sh
+// publica no site uma versao gerada com as saidas da pilha, e o
+// servidor_local.py serve a versao de modo local.
 window.SCHULZ_CONFIG = {
   modo: "cognito",
   api: "https://SUBSTITUIR.execute-api.sa-east-1.amazonaws.com",

@@ -15,6 +15,7 @@ Invocada pela fn-api; tambem pode ser chamada direto (testes e execucao local).
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 from datetime import date
@@ -71,12 +72,16 @@ def processar(evento: dict, repositorio: Repositorio, s3, hoje: date | None = No
         marca_prova_de_conceito=os.environ.get("MARCA_PROVA_DE_CONCEITO", "1") == "1",
     )
     pdf = gerar_pdf(valores)
-    sha256_pdf = hashlib.sha256(pdf).hexdigest()
+    resumo = hashlib.sha256(pdf).digest()
+    sha256_pdf = resumo.hex()
     ano, sequencial = numero.split("-")
     bucket = os.environ["BUCKET_CERTIFICADOS"]
     chave_pdf = f"certificados/{ano}/{sequencial}.pdf"
+    # Com Object Lock o S3 exige checksum no PUT; o SHA-256 tambem garante
+    # que o arquivo gravado e o mesmo cujo hash vai para o certificado
     gravado = s3.put_object(Bucket=bucket, Key=chave_pdf, Body=pdf,
                             ContentType="application/pdf",
+                            ChecksumSHA256=base64.b64encode(resumo).decode(),
                             Metadata={"numero": numero, "sha256": sha256_pdf})
 
     certificado = {

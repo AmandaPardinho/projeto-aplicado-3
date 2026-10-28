@@ -1,0 +1,481 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Schulz - certificados de calibracao (Projeto Aplicado III, Grupo 4).
+  Arquitetura da AV2: Cognito, HTTP API, fn-api / fn-ingestao / fn-emissao,
+  DynamoDB em tabela unica, S3 (entrada, certificados com Object Lock e site)
+  e CloudFront. Dimensionado para a camada gratuita.
+
+Parameters:
+  EmailAlertas:
+    Type: String
+    Default: ""
+    Description: E-mail que recebe os alarmes e o aviso do orcamento (vazio = sem e-mail).
+  OrcamentoUSD:
+    Type: Number
+    Default: 1
+    Description: Limite mensal do orcamento da conta, em dolares.
+  DiasRetencaoCertificados:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    Description: >
+      Retencao padrao do Object Lock (modo GOVERNANCE) dos PDFs. Na producao
+      seria COMPLIANCE pelo prazo legal; na PoC fica curto para a conta poder
+      ser limpa depois da avaliacao.
+
+Conditions:
+  TemEmail: !Not [!Equals [!Ref EmailAlertas, ""]]
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [x86_64]
+    CodeUri: ../backend/
+    Environment:
+      Variables:
+        TABELA: !Ref Tabela
+        BUCKET_ENTRADA: !Sub schulz-entrada-${AWS::AccountId}-${AWS::Region}
+        BUCKET_CERTIFICADOS: !Sub schulz-certificados-${AWS::AccountId}-${AWS::Region}
+        URL_APP: !Sub https://${Distribuicao.DomainName}/
+        MARCA_PROVA_DE_CONCEITO: "1"
+
+Resources:
+
+  # --- Dados -----------------------------------------------------------------
+
+  # Mesma definicao de schulz.repositorio.criar_tabela (AV2 3.2.3): 20 RCU e
+  # 20 WCU no total, dentro dos 25 da camada gratuita.
+  Tabela:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: schulz-certificacao
+      BillingMode: PROVISIONED
+      AttributeDefinitions:
+        - { AttributeName: PK, AttributeType: S }
+        - { AttributeName: SK, AttributeType: S }
+        - { AttributeName: GSI1PK, AttributeType: S }
+        - { AttributeName: GSI1SK, AttributeType: S }
+      KeySchema:
+        - { AttributeName: PK, KeyType: HASH }
+        - { AttributeName: SK, KeyType: RANGE }
+      ProvisionedThroughput: { ReadCapacityUnits: 15, WriteCapacityUnits: 15 }
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - { AttributeName: GSI1PK, KeyType: HASH }
+            - { AttributeName: GSI1SK, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+          ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
+      SSESpecification: { SSEEnabled: true }
+
+  # Relatorios enviados (entrada/), recusados (quarentena/) e logs da ingestao.
+  # O navegador envia direto com o presigned POST, por isso o CORS.
+  BucketEntrada:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub schulz-entrada-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [POST]
+            AllowedOrigins: [!Sub "https://${Distribuicao.DomainName}"]
+            AllowedHeaders: ["*"]
+            MaxAge: 3000
+      LifecycleConfiguration:
+        Rules:
+          - Id: quarentena-90-dias      # ingestao.DIAS_NA_QUARENTENA
+            Status: Enabled
+            Prefix: quarentena/
+            ExpirationInDays: 90
+
+  # PDFs emitidos: versionamento + Object Lock (o certificado nao muda depois
+  # de emitido). Fica retido se a pilha for removida.
+  BucketCertificados:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub schulz-certificados-${AWS::AccountId}-${AWS::Region}
+      VersioningConfiguration: { Status: Enabled }
+      ObjectLockEnabled: true
+      ObjectLockConfiguration:
+        ObjectLockEnabled: Enabled
+        Rule:
+          DefaultRetention:
+            Mode: GOVERNANCE
+            Days: !Ref DiasRetencaoCertificados
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+
+  # --- Login (Cognito) -------------------------------------------------------
+
+  UsuariosPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: schulz-usuarios
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true   # sem auto-cadastro: o laboratorio cria os usuarios
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      MfaConfiguration: "OFF"            # simplificacao da PoC (na AV2, MFA para signatarios)
+      Schema:
+        - { Name: matricula, AttributeDataType: String, Mutable: true }
+        - { Name: setor, AttributeDataType: String, Mutable: true }
+
+  UsuariosDominio:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref UsuariosPool
+      Domain: !Sub schulz-pa3-${AWS::AccountId}
+
+  UsuariosCliente:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: schulz-web
+      UserPoolId: !Ref UsuariosPool
+      GenerateSecret: false              # SPA: Authorization Code + PKCE
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      # Sem aws.cognito.signin.user.admin: o usuario nao consegue trocar os
+      # proprios atributos pela API do Cognito
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - !Sub https://${Distribuicao.DomainName}/
+        - !Sub https://${Distribuicao.DomainName}/index.html
+      LogoutURLs:
+        - !Sub https://${Distribuicao.DomainName}/
+        - !Sub https://${Distribuicao.DomainName}/index.html
+      # custom:matricula e custom:setor decidem permissoes (RN05, setor):
+      # so o administrador altera
+      ReadAttributes: [email, email_verified, name, custom:matricula, custom:setor]
+      WriteAttributes: [email, name]
+      PreventUserExistenceErrors: ENABLED
+      IdTokenValidity: 60
+      AccessTokenValidity: 60
+      RefreshTokenValidity: 12
+      TokenValidityUnits:
+        IdToken: minutes
+        AccessToken: minutes
+        RefreshToken: hours
+
+  GrupoTecnico:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: tecnico, Description: Envia o relatorio do Calypso }
+  GrupoRevisor:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: revisor, Description: Revisa e cancela calibracoes }
+  GrupoSignatario:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: signatario, Description: Emite o certificado (RN05) }
+  GrupoAdminPadrao:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: admin_padrao, Description: Atualiza os padroes (UC03) }
+  GrupoConsulta:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: consulta, Description: Consulta instrumentos do proprio setor }
+  GrupoAuditor:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties: { UserPoolId: !Ref UsuariosPool, GroupName: auditor, Description: Le a trilha de auditoria }
+
+  # --- API -------------------------------------------------------------------
+
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: $default
+      CorsConfiguration:
+        AllowOrigins: [!Sub "https://${Distribuicao.DomainName}"]
+        AllowMethods: [GET, POST, PUT, OPTIONS]
+        AllowHeaders: [authorization, content-type]
+        MaxAge: 600
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+      Auth:
+        DefaultAuthorizer: Cognito
+        Authorizers:
+          Cognito:
+            IdentitySource: $request.header.Authorization
+            JwtConfiguration:
+              issuer: !Sub https://cognito-idp.${AWS::Region}.amazonaws.com/${UsuariosPool}
+              audience: [!Ref UsuariosCliente]
+
+  # Rotas iguais a handlers.api.ROTAS (tests/test_infra.py confere)
+  FnApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: schulz-fn-api
+      Handler: handlers.api.handler
+      MemorySize: 512
+      Timeout: 29                         # limite da integracao da HTTP API
+      Environment:
+        Variables:
+          FUNCAO_EMISSAO: !Ref FnEmissao
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
+        - LambdaInvokePolicy: { FunctionName: !Ref FnEmissao }
+        - Statement:
+            # presigned POST (upload) e GET (download) sao assinados com a
+            # credencial desta funcao
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub arn:aws:s3:::schulz-entrada-${AWS::AccountId}-${AWS::Region}/entrada/*
+            - Effect: Allow
+              Action: [s3:GetObject, s3:GetObjectVersion]
+              Resource: !Sub arn:aws:s3:::schulz-certificados-${AWS::AccountId}-${AWS::Region}/certificados/*
+      Events:
+        Me:              { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /me } }
+        PedirUpload:     { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: POST, Path: /calibracoes/upload } }
+        Calibracoes:     { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /calibracoes } }
+        Calibracao:      { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/calibracoes/{tag}/{id}" } }
+        Cancelar:        { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: POST, Path: "/calibracoes/{tag}/{id}/cancelar" } }
+        Emitir:          { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: POST, Path: "/calibracoes/{tag}/{id}/emitir" } }
+        Quarentena:      { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /quarentena } }
+        Instrumento:     { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/instrumentos/{tag}" } }
+        Historico:       { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/instrumentos/{tag}/certificados" } }
+        Certificado:     { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/certificados/{numero}" } }
+        Download:        { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/certificados/{numero}/download" } }
+        Padroes:         { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /padroes } }
+        Padrao:          { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: "/padroes/{codigo}" } }
+        AtualizarPadrao: { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: PUT,  Path: "/padroes/{codigo}" } }
+        Auditoria:       { Type: HttpApi, Properties: { ApiId: !Ref Api, Method: GET,  Path: /auditoria } }
+
+  # Disparada pelo S3 quando o relatorio chega em entrada/. Falhas depois das
+  # tentativas automaticas vao para a fila de falhas (AV2: SQS de falhas).
+  FnIngestao:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: schulz-fn-ingestao
+      Handler: handlers.ingestao.handler
+      MemorySize: 1024
+      Timeout: 60
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt FilaFalhas.Arn
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
+        - Statement:
+            - Effect: Allow
+              Action: [s3:GetObject, s3:PutObject]
+              Resource: !Sub arn:aws:s3:::schulz-entrada-${AWS::AccountId}-${AWS::Region}/*
+      Events:
+        RelatorioRecebido:
+          Type: S3
+          Properties:
+            Bucket: !Ref BucketEntrada
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - { Name: prefix, Value: entrada/ }
+
+  # Invocada pela fn-api; so ela grava no bucket de certificados.
+  FnEmissao:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: schulz-fn-emissao
+      Handler: handlers.emissao.handler
+      MemorySize: 1024
+      Timeout: 25
+      Policies:
+        - DynamoDBCrudPolicy: { TableName: !Ref Tabela }
+        - Statement:
+            - Effect: Allow
+              Action: s3:PutObject
+              Resource: !Sub arn:aws:s3:::schulz-certificados-${AWS::AccountId}-${AWS::Region}/certificados/*
+
+  LogsApi:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${FnApi}", RetentionInDays: 14 }
+  LogsIngestao:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${FnIngestao}", RetentionInDays: 14 }
+  LogsEmissao:
+    Type: AWS::Logs::LogGroup
+    Properties: { LogGroupName: !Sub "/aws/lambda/${FnEmissao}", RetentionInDays: 14 }
+
+  FilaFalhas:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: schulz-falhas-ingestao
+      MessageRetentionPeriod: 1209600     # 14 dias
+      SqsManagedSseEnabled: true
+
+  # --- Site (S3 privado + CloudFront) ----------------------------------------
+
+  BucketSite:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub schulz-web-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AcessoSite:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub schulz-web-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  PoliticaSite:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketSite
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub ${BucketSite.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribuicao}
+
+  Distribuicao:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: Schulz - plataforma de certificados (PoC)
+        Enabled: true
+        HttpVersion: http2
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_All        # sa-east-1: inclui a borda de Sao Paulo
+        Origins:
+          - Id: site
+            DomainName: !GetAtt BucketSite.RegionalDomainName
+            OriginAccessControlId: !GetAtt AcessoSite.Id
+            S3OriginConfig: { OriginAccessIdentity: "" }
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [GET, HEAD]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6          # Managed-CachingOptimized
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # Managed-SecurityHeadersPolicy
+
+  # --- Alarmes e orcamento ---------------------------------------------------
+
+  Alertas:
+    Type: AWS::SNS::Topic
+    Condition: TemEmail
+    Properties:
+      TopicName: schulz-alertas
+      Subscription:
+        - { Protocol: email, Endpoint: !Ref EmailAlertas }
+
+  AlarmeFilaFalhas:
+    Type: AWS::CloudWatch::Alarm
+    Condition: TemEmail
+    Properties:
+      AlarmDescription: Relatorio que a fn-ingestao nao conseguiu processar
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions: [{ Name: QueueName, Value: !GetAtt FilaFalhas.QueueName }]
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Alertas]
+
+  AlarmeErrosEmissao:
+    Type: AWS::CloudWatch::Alarm
+    Condition: TemEmail
+    Properties:
+      AlarmDescription: Erro na fn-emissao (certificado pode ter ficado EMITINDO)
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref FnEmissao }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Alertas]
+
+  AlarmeErrosApi:
+    Type: AWS::CloudWatch::Alarm
+    Condition: TemEmail
+    Properties:
+      AlarmDescription: Erros nao tratados na fn-api
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref FnApi }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref Alertas]
+
+  Orcamento:
+    Type: AWS::Budgets::Budget
+    Condition: TemEmail
+    Properties:
+      Budget:
+        BudgetName: schulz-pa3
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit: { Amount: !Ref OrcamentoUSD, Unit: USD }
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 1                  # % do limite: avisa no primeiro centavo
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref EmailAlertas }]
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+          Subscribers: [{ SubscriptionType: EMAIL, Address: !Ref EmailAlertas }]
+
+Outputs:
+  UrlApp:
+    Description: Endereco da plataforma (CloudFront)
+    Value: !Sub https://${Distribuicao.DomainName}/
+  UrlApi:
+    Value: !GetAtt Api.ApiEndpoint
+  CognitoDominio:
+    Value: !Sub https://${UsuariosDominio}.auth.${AWS::Region}.amazoncognito.com
+  CognitoPoolId:
+    Value: !Ref UsuariosPool
+  CognitoClientId:
+    Value: !Ref UsuariosCliente
+  Tabela:
+    Value: !Ref Tabela
+  BucketSite:
+    Value: !Ref BucketSite
+  BucketEntrada:
+    Value: !Ref BucketEntrada
+  BucketCertificados:
+    Value: !Ref BucketCertificados
+  DistribuicaoId:
+    Value: !Ref Distribuicao

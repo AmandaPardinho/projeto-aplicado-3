@@ -36,7 +36,7 @@ export async function tela(raiz, ctx) {
       "O arquivo vai direto para o armazenamento e é processado em seguida. ",
       "Se alguma regra bloquear a importação, ele fica em quarentena com o motivo."),
     window.SCHULZ_CONFIG.exemploReport
-      ? h("p", { class: "dica" }, "Modo local: ",
+      ? h("p", { class: "dica" }, "Para testar: ",
           h("a", { href: window.SCHULZ_CONFIG.exemploReport }, "baixe um Report de exemplo do 703.1208"),
           " para testar o envio.")
       : null,
