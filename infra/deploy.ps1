@@ -58,12 +58,15 @@ if ($LASTEXITCODE -ne 0) { throw "Credencial da AWS ausente ou expirada (AWS Aca
 
 Write-Host "==> 1/5 Pilha $Pilha em $Regiao"
 Executar sam build --template-file infra/template.yaml --build-dir .aws-sam/build
+# O SAM recusa "EmailAlertas=" vazio: sem e-mail, vale o padrao do template
+$Parametros = @()
+if ($EmailAlertas) { $Parametros = @("--parameter-overrides", "EmailAlertas=$EmailAlertas") }
 Executar sam deploy `
     --template-file .aws-sam/build/template.yaml `
     --stack-name $Pilha --region $Regiao `
     --capabilities CAPABILITY_IAM --resolve-s3 `
     --no-confirm-changeset --no-fail-on-empty-changeset `
-    --parameter-overrides "EmailAlertas=$EmailAlertas"
+    @Parametros
 
 function SaidaDaPilha([string]$Chave) {
     $valor = & aws cloudformation describe-stacks --stack-name $Pilha --region $Regiao `

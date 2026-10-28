@@ -35,12 +35,15 @@ aws sts get-caller-identity --query Account --output text >/dev/null \
 
 echo "==> 1/5 Pilha $PILHA em $REGIAO"
 sam build --template-file infra/template.yaml --build-dir .aws-sam/build
+# O SAM recusa "EmailAlertas=" vazio: sem e-mail, vale o padrao do template
+PARAMETROS=()
+[ -n "$EMAIL_ALERTAS" ] && PARAMETROS=(--parameter-overrides "EmailAlertas=$EMAIL_ALERTAS")
 sam deploy \
   --template-file .aws-sam/build/template.yaml \
   --stack-name "$PILHA" --region "$REGIAO" \
   --capabilities CAPABILITY_IAM --resolve-s3 \
   --no-confirm-changeset --no-fail-on-empty-changeset \
-  --parameter-overrides "EmailAlertas=$EMAIL_ALERTAS"
+  "${PARAMETROS[@]}"
 
 saida() {
   aws cloudformation describe-stacks --stack-name "$PILHA" --region "$REGIAO" \
