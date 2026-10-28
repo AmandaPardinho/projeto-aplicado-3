@@ -88,6 +88,12 @@ Pré-requisitos na máquina de quem publica:
 EMAIL_ALERTAS=grupo@exemplo.com infra/deploy.sh
 ```
 
+No Windows, pelo PowerShell (mesmas etapas; precisa do Python 3.12 no PATH e da `.venv` criada com `py -3.12 -m venv .venv`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File infra\deploy.ps1 -EmailAlertas grupo@exemplo.com
+```
+
 O script cria ou atualiza a pilha `schulz-pa3`, carrega os cadastros e os usuários de teste, publica o site com o `config.js` gerado e salva uma folha de etiquetas do 703.1208 em `infra/saida/`. No fim ele mostra o endereço da plataforma. As senhas dos usuários de teste ficam em `infra/senhas-teste.txt`, que não vai para o git. `EMAIL_ALERTAS` é opcional: com ele, a pilha cria o orçamento de US$ 1 e os alarmes, e a AWS manda um e-mail pedindo a confirmação da inscrição.
 
 **Padrão vencido:** o certificado real do padrão 500.011 venceu em 31/08/2026, e a carga inicial usa essa data. Enquanto ele estiver vencido, o envio de relatórios fica bloqueado (RN04). Na demonstração, o usuário `admin.padrao` atualiza o padrão pela tela Padrões (UC03). Para pular esse passo, publique com `PADRAO_VALIDO_ATE=2027-11-20 infra/deploy.sh`.

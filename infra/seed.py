@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import os
 import secrets
+import subprocess
 import sys
 from pathlib import Path
 
@@ -125,6 +126,12 @@ def gravar_senhas(senhas: dict, url_app: str) -> None:
     with os.fdopen(descritor, "w") as arquivo:
         arquivo.write("\n".join(linhas) + "\n")
     ARQUIVO_SENHAS.chmod(0o600)
+    if os.name == "nt":
+        # No Windows o chmod so mexe no "somente leitura": a ACL tira a heranca
+        # da pasta e deixa o arquivo acessivel so ao usuario atual
+        subprocess.run(["icacls", str(ARQUIVO_SENHAS), "/inheritance:r",
+                        "/grant:r", f"{os.environ['USERNAME']}:F"],
+                       check=True, stdout=subprocess.DEVNULL)
 
 
 def main():

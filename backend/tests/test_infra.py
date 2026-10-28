@@ -186,6 +186,19 @@ def test_arquivo_de_senhas_nasce_privado(tmp_path, monkeypatch):
     assert (tmp_path / "senhas.txt").stat().st_mode & 0o777 == 0o600
 
 
+def test_arquivo_de_senhas_no_windows_recebe_acl_so_do_usuario(tmp_path, monkeypatch):
+    import seed
+
+    chamadas = []
+    monkeypatch.setattr(seed, "ARQUIVO_SENHAS", tmp_path / "senhas.txt")
+    monkeypatch.setattr(seed.os, "name", "nt")
+    monkeypatch.setenv("USERNAME", "amanda")
+    monkeypatch.setattr(seed.subprocess, "run", lambda args, **_: chamadas.append(args))
+    seed.gravar_senhas({"a": "x1"}, "https://d1.cloudfront.net")
+    assert chamadas == [["icacls", str(tmp_path / "senhas.txt"), "/inheritance:r",
+                         "/grant:r", "amanda:F"]]
+
+
 def test_seed_nao_sobrescreve_padrao_atualizado(aws):
     import seed
     from schulz.repositorio import chave_padrao
