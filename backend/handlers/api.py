@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 import boto3
@@ -39,6 +39,9 @@ TAMANHO_MAXIMO = 5 * 1024 * 1024
 VALIDADE_UPLOAD = 600     # 10 minutos (E1)
 VALIDADE_DOWNLOAD = 900   # 15 minutos (E8)
 EXTENSOES = (".xlsx", ".xlsm")
+# Acao feita na tela por uma pessoa; "sistema" fica para o que as Lambdas
+# fazem sozinhas (importacao, quarentena, gravacao do certificado)
+CANAL_WEB = "teclado"
 STATUS_VALIDOS = {"AGUARDANDO_REVISAO", "EMITINDO", "EMITIDA", "CANCELADA"}
 CAMPOS_DO_PADRAO = ("descricao", "tipo", "fabricante", "modelo", "numero_serie",
                     "certificado_externo", "executante", "data_ultima_calibracao",
@@ -164,7 +167,7 @@ def pedir_upload(usuario: Usuario, ctx: Contexto, evento: dict):
         + [{campo: valor} for campo, valor in metadados.items()],
         ExpiresIn=VALIDADE_UPLOAD)
     auditoria.registrar(ctx.repositorio, usuario.login, "solicitar_envio",
-                        f"INST#{tag}/CAL#{calibracao_id}",
+                        f"INST#{tag}/CAL#{calibracao_id}", CANAL_WEB,
                         detalhes={"padrao": codigo_padrao, "arquivo": nome_arquivo})
     return 201, {"calibracao_id": calibracao_id, "upload": upload,
                  "expira_em_segundos": VALIDADE_UPLOAD}
@@ -201,7 +204,7 @@ def detalhar_calibracao(usuario: Usuario, ctx: Contexto, evento: dict):
         certificado = ctx.repositorio.certificado(item["numero_certificado"])
         corpo["certificado"] = _sem_chaves(certificado) if certificado else None
     auditoria.registrar(ctx.repositorio, usuario.login, "visualizar_calibracao",
-                        f"INST#{item['tag']}/CAL#{item['calibracao_id']}")
+                        f"INST#{item['tag']}/CAL#{item['calibracao_id']}", CANAL_WEB)
     return 200, corpo
 
 
@@ -226,7 +229,7 @@ def cancelar_calibracao(usuario: Usuario, ctx: Contexto, evento: dict):
             raise ErroDeNegocio("só é possível cancelar uma calibração aguardando revisão", 409) from exc
         raise
     auditoria.registrar(ctx.repositorio, usuario.login, "cancelar_calibracao",
-                        f"INST#{item['tag']}/CAL#{item['calibracao_id']}",
+                        f"INST#{item['tag']}/CAL#{item['calibracao_id']}", CANAL_WEB,
                         detalhes={"justificativa": justificativa})
     return 200, {"calibracao_id": item["calibracao_id"], "status": "CANCELADA"}
 
@@ -310,7 +313,7 @@ def _carregar_certificado(usuario: Usuario, ctx: Contexto, evento: dict) -> dict
 def detalhar_certificado(usuario: Usuario, ctx: Contexto, evento: dict):
     certificado = _carregar_certificado(usuario, ctx, evento)
     auditoria.registrar(ctx.repositorio, usuario.login, "visualizar_certificado",
-                        f"CERT#{certificado['numero']}")
+                        f"CERT#{certificado['numero']}", CANAL_WEB)
     return 200, _sem_chaves(certificado)
 
 
@@ -325,7 +328,7 @@ def baixar_certificado(usuario: Usuario, ctx: Contexto, evento: dict):
     url = ctx.s3.generate_presigned_url("get_object", Params=parametros,
                                         ExpiresIn=VALIDADE_DOWNLOAD)
     auditoria.registrar(ctx.repositorio, usuario.login, "baixar_certificado",
-                        f"CERT#{certificado['numero']}")
+                        f"CERT#{certificado['numero']}", CANAL_WEB)
     return 200, {"url": url, "expira_em_segundos": VALIDADE_DOWNLOAD,
                  "pdf_sha256": certificado["pdf_sha256"]}
 
@@ -362,6 +365,13 @@ def atualizar_padrao(usuario: Usuario, ctx: Contexto, evento: dict):
         raise ErroDeNegocio("datas do padrão devem estar no formato AAAA-MM-DD", 400) from exc
     if novo["data_proxima_calibracao"] <= novo["data_ultima_calibracao"]:
         raise ErroDeNegocio("a próxima calibração deve ser depois da última", 400)
+    try:
+        # O orcamento entra no calculo GUM de toda calibracao futura
+        novo["orcamento"] = {k: Decimal(str(v)) for k, v in novo.get("orcamento", {}).items()}
+        if not all(v.is_finite() for v in novo["orcamento"].values()):
+            raise InvalidOperation
+    except (InvalidOperation, AttributeError) as exc:
+        raise ErroDeNegocio("os valores do orçamento de incerteza devem ser números", 400) from exc
     momento = iso(agora())
     novo.update(atualizado_em=momento, atualizado_por=usuario.login)
     historico = {k: v for k, v in novo.items() if k not in ("GSI1PK", "GSI1SK")}
@@ -370,7 +380,7 @@ def atualizar_padrao(usuario: Usuario, ctx: Contexto, evento: dict):
         {"Put": {"Item": novo}},
         {"Put": {"Item": historico}},
         {"Put": {"Item": auditoria.item_auditoria(
-            usuario.login, "atualizar_padrao", f"PADRAO#{codigo}", "teclado",
+            usuario.login, "atualizar_padrao", f"PADRAO#{codigo}", CANAL_WEB,
             {"campos": sorted(k for k in CAMPOS_DO_PADRAO if k in corpo)})}},
     ])
     return 200, {"padrao": _sem_chaves(novo)}

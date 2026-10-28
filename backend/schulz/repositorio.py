@@ -108,6 +108,27 @@ def tabela():
     return boto3.resource("dynamodb").Table(os.environ["TABELA"])
 
 
+def criar_tabela(dynamodb):
+    """Mesma definicao da AV2 3.2.3 (tabela unica + GSI1). Usada nos testes
+    e no servidor local; na AWS a tabela vem do template SAM."""
+    return dynamodb.create_table(
+        TableName=os.environ["TABELA"],
+        BillingMode="PROVISIONED",
+        AttributeDefinitions=[{"AttributeName": n, "AttributeType": "S"}
+                              for n in ("PK", "SK", "GSI1PK", "GSI1SK")],
+        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"},
+                   {"AttributeName": "SK", "KeyType": "RANGE"}],
+        ProvisionedThroughput={"ReadCapacityUnits": 15, "WriteCapacityUnits": 15},
+        GlobalSecondaryIndexes=[{
+            "IndexName": "GSI1",
+            "KeySchema": [{"AttributeName": "GSI1PK", "KeyType": "HASH"},
+                          {"AttributeName": "GSI1SK", "KeyType": "RANGE"}],
+            "Projection": {"ProjectionType": "ALL"},
+            "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
+        }],
+    )
+
+
 # --- leituras ------------------------------------------------------------
 
 class Repositorio:

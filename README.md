@@ -10,7 +10,7 @@ Prova de conceito serverless na AWS (camada gratuita) que recebe o relatório br
 | Fase | Conteúdo | Situação |
 |---|---|---|
 | 1 — Backend | parser do Calypso, GUM, banda de guarda, PDF, fn-api / fn-ingestao / fn-emissao, testes | concluída |
-| 2 — Frontend | SPA + PWA com login, revisão, emissão, consulta por TAG/QR e trilha de auditoria | a fazer |
+| 2 — Frontend | SPA + PWA com login, revisão, emissão, consulta por TAG/QR e trilha de auditoria | concluída |
 | 3 — Infraestrutura | template AWS SAM, `deploy.sh`, carga inicial | a fazer |
 | 4 — Documentação | matriz de rastreabilidade, roteiro de deploy, relatório e vídeo | a fazer |
 
@@ -36,10 +36,38 @@ backend/
     ingestao.py           fn-ingestao: evento do S3, ETL, quarentena e persistência
     emissao.py            fn-emissao: número, PDF, Object Lock e certificado imutável
   tests/                  pytest + moto (DynamoDB e S3 simulados)
+  servidor_local.py       roda as Lambdas + frontend sem AWS, para testar as telas
+frontend/                 SPA estática (HTML, CSS e JS puros, sem etapa de build) + PWA
+  index.html, config.js   página única; config.js é gerado no deploy (URL da API, Cognito)
+  js/auth.js              login no Cognito Hosted UI (Authorization Code + PKCE)
+  js/leitor.js            canais de consulta: TAG digitado, leitor USB e câmera (QR)
+  js/telas/               envio, fila, revisão/emissão, quarentena, consulta, certificado,
+                          padrões e auditoria
+  sw.js, manifest.webmanifest   PWA instalável no celular (guarda só a casca do app)
 docs/
   achados-nas-planilhas.md  erros encontrados nas planilhas da Schulz
 legado-av3/               MVP Flask entregue na AV3
 ```
+
+## Testando as telas sem AWS
+
+```bash
+cd backend
+python servidor_local.py        # http://localhost:8000
+```
+
+O servidor roda as mesmas Lambdas com DynamoDB e S3 simulados em memória. A tela de login lista usuários de teste, um por perfil (técnico, revisor, signatário, admin de padrões, consulta e auditor), sem senha. Uma calibração do 703.1208 já entra na fila, e a tela de envio tem um link para baixar um Report de exemplo. O padrão 500.011 é carregado válido até 2027.
+
+| Perfil | O que vê |
+|---|---|
+| Técnico | envio do relatório; fila e quarentena só do que enviou |
+| Revisor | fila, revisão (GUM + banda de guarda), cancelamento |
+| Signatário | tudo do revisor + emissão do certificado (RN05) |
+| Admin. de padrões | cadastro e atualização dos padrões (UC03) |
+| Consulta | situação do instrumento por TAG/QR e download do certificado do próprio setor |
+| Auditor | trilha de auditoria por dia, com usuário, ação, alvo e canal |
+
+A consulta do instrumento registra o canal usado: TAG digitado (teclado ou PWA), leitor USB (detectado pela velocidade da digitação) ou câmera (leitura do QR na tela, ou link aberto pelo QR da etiqueta).
 
 ## Rodando os testes
 

@@ -95,6 +95,11 @@ def test_fluxo_completo_ate_o_certificado(ctx):
             "emitir_certificado", "consultar_instrumento", "baixar_certificado"} <= acoes
     consulta_registrada = next(r for r in trilha["registros"] if r["acao"] == "consultar_instrumento")
     assert (consulta_registrada["usuario"], consulta_registrada["canal"]) == ("operador.linha", "leitor")
+    # Acao feita na tela fica como teclado; "sistema" e so o que as Lambdas fazem sozinhas
+    canais = {r["acao"]: r["canal"] for r in trilha["registros"]}
+    assert canais["solicitar_envio"] == canais["visualizar_calibracao"] == "teclado"
+    assert canais["baixar_certificado"] == "teclado"
+    assert canais["importar_relatorio"] == "sistema"
 
 
 def test_emissao_repetida_nao_gera_novo_numero(ctx):
@@ -106,8 +111,11 @@ def test_emissao_repetida_nao_gera_novo_numero(ctx):
 
 
 def test_rh17_mesmo_arquivo_duas_vezes_vai_para_quarentena(ctx):
-    primeiro_id, _, _ = enviar(ctx)
-    _, resultado, _ = enviar(ctx)
+    # Gerado uma vez so: o xlsx guarda a hora de criacao, e duas geracoes em
+    # segundos diferentes teriam SHA-256 diferente
+    conteudo = gerar_report()
+    primeiro_id, _, _ = enviar(ctx, conteudo)
+    _, resultado, _ = enviar(ctx, conteudo)
     assert resultado["status"] == "QUARENTENA"
     assert resultado["violacoes"][0]["regra"] == "RH17"
     assert primeiro_id in resultado["violacoes"][0]["mensagem"]
@@ -227,6 +235,20 @@ def test_uc03_atualizar_padrao_guarda_historico(ctx):
     assert [h["data_ultima_calibracao"] for h in detalhe["historico"]] == ["2026-08-30"]
     assert chamar(ctx, "PUT /padroes/{codigo}", REVISOR, caminho={"codigo": "500.011"},
                   corpo={})[0] == 403
+
+
+def test_uc03_orcamento_precisa_ser_numerico(ctx):
+    admin = dict(grupos=["admin_padrao"], login="admin.padrao")
+    datas = {"data_ultima_calibracao": "2026-08-30", "data_proxima_calibracao": "2028-05-31"}
+    status, corpo = chamar(ctx, "PUT /padroes/{codigo}", admin, caminho={"codigo": "500.011"},
+                           corpo={**datas, "orcamento": {"incerteza_mmc_um": "abc"}})
+    assert status == 400, corpo
+    status, corpo = chamar(ctx, "PUT /padroes/{codigo}", admin, caminho={"codigo": "500.011"},
+                           corpo={**datas, "orcamento": {"incerteza_mmc_um": 0.4,
+                                                         "erro_sistematico_mmc_um": "-0.8"}})
+    assert status == 200, corpo
+    assert corpo["padrao"]["orcamento"] == {"incerteza_mmc_um": "0.4",
+                                            "erro_sistematico_mmc_um": "-0.8"}
 
 
 def test_me_lista_permissoes(ctx):

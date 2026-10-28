@@ -27,30 +27,10 @@ os.environ.update({
 DIA_DA_CALIBRACAO = date(2026, 8, 26)
 
 
-def criar_tabela(dynamodb):
-    """Mesma definicao da AV2 3.2.3 (tabela unica + GSI1)."""
-    return dynamodb.create_table(
-        TableName=os.environ["TABELA"],
-        BillingMode="PROVISIONED",
-        AttributeDefinitions=[{"AttributeName": n, "AttributeType": "S"}
-                              for n in ("PK", "SK", "GSI1PK", "GSI1SK")],
-        KeySchema=[{"AttributeName": "PK", "KeyType": "HASH"},
-                   {"AttributeName": "SK", "KeyType": "RANGE"}],
-        ProvisionedThroughput={"ReadCapacityUnits": 15, "WriteCapacityUnits": 15},
-        GlobalSecondaryIndexes=[{
-            "IndexName": "GSI1",
-            "KeySchema": [{"AttributeName": "GSI1PK", "KeyType": "HASH"},
-                          {"AttributeName": "GSI1SK", "KeyType": "RANGE"}],
-            "Projection": {"ProjectionType": "ALL"},
-            "ProvisionedThroughput": {"ReadCapacityUnits": 5, "WriteCapacityUnits": 5},
-        }],
-    )
-
-
 @pytest.fixture
 def aws():
     from schulz import cadastros_exemplo
-    from schulz.repositorio import Repositorio
+    from schulz.repositorio import Repositorio, criar_tabela
 
     with mock_aws():
         dynamodb = boto3.resource("dynamodb")

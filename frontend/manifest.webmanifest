@@ -1,0 +1,16 @@
+{
+  "name": "Certificados de Calibração — Schulz",
+  "short_name": "Calibração",
+  "description": "Consulta da situação de calibração dos instrumentos pelo QR Code da etiqueta.",
+  "lang": "pt-BR",
+  "start_url": "./#/consulta",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f6f8",
+  "theme_color": "#1d3b53",
+  "icons": [
+    { "src": "icons/icone-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icone-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
