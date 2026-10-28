@@ -41,9 +41,14 @@ const GRUPOS = {
 
 const raiz = document.getElementById("conteudo");
 let limpezas = [];
+let navegacaoAtual = 0;
+
+function decodificar(parte) {
+  try { return decodeURIComponent(parte); } catch { return parte; }  // "%ZZ" vindo de QR ou link
+}
 
 function rotaAtual() {
-  const partes = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
+  const partes = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodificar);
   return { nome: partes[0] || "", params: partes.slice(1) };
 }
 
@@ -79,6 +84,12 @@ async function iniciar() {
   async function navegar() {
     limpezas.forEach((fn) => fn());
     limpezas = [];
+    // Uma tela lenta que termina depois de o usuario trocar de rota nao pode
+    // desenhar por cima da rota nova: cada navegacao so escreve na sua vez
+    const geracao = ++navegacaoAtual;
+    const destino = {
+      replaceChildren: (...filhos) => { if (geracao === navegacaoAtual) raiz.replaceChildren(...filhos); },
+    };
     const { nome, params } = rotaAtual();
     const rota = ROTAS[nome];
     if (!rota) {
@@ -91,11 +102,11 @@ async function iniciar() {
       return;
     }
     try {
-      await rota.tela(raiz, ctx, params);
+      await rota.tela(destino, ctx, params);
     } catch (exc) {
-      montar(raiz, erro(exc));
+      montar(destino, erro(exc));
     }
-    window.scrollTo(0, 0);
+    if (geracao === navegacaoAtual) window.scrollTo(0, 0);
   }
 
   window.addEventListener("hashchange", navegar);
@@ -126,10 +137,13 @@ function telaDeLogin() {
     ? "Para ver a situação deste instrumento, entre com seu usuário. Toda consulta fica registrada."
     : "Entre com seu usuário para continuar.";
   if (!modoLocal) {
+    const saida = h("div", { "aria-live": "polite" });
     montar(raiz, h("section", { class: "login" },
       h("h1", {}, "Certificados de calibração"),
       h("p", {}, texto),
-      h("button", { class: "botao botao-primario", onclick: () => entrar(destino) }, "Entrar")));
+      h("button", { class: "botao botao-primario",
+                    onclick: () => entrar(destino).catch((exc) => montar(saida, erro(exc))) }, "Entrar"),
+      saida));
     return;
   }
   const usuarios = window.SCHULZ_CONFIG.usuariosLocais || [];

@@ -12,15 +12,30 @@ const CHAVE_TOKENS = "schulz.tokens";
 const CHAVE_PKCE = "schulz.pkce";
 const CHAVE_LOCAL = "schulz.usuario-local";
 
+// Sem sessionStorage (bloqueado pelo navegador) os valores ficam so em
+// memoria: a sessao vale ate recarregar a pagina. O PKCE nao sobrevive ao
+// redirecionamento do Cognito, entao entrar() avisa antes de sair da pagina.
+const memoria = new Map();
+
+function armazenamentoDisponivel() {
+  try {
+    sessionStorage.setItem("schulz.teste", "1");
+    sessionStorage.removeItem("schulz.teste");
+    return true;
+  } catch { return false; }
+}
+
 function ler(chave) {
-  try { return JSON.parse(sessionStorage.getItem(chave)); } catch { return null; }
+  try { return JSON.parse(sessionStorage.getItem(chave)); } catch { return memoria.get(chave) ?? null; }
 }
 
 function gravar(chave, valor) {
+  if (valor === null) memoria.delete(chave);
+  else memoria.set(chave, valor);
   try {
     if (valor === null) sessionStorage.removeItem(chave);
     else sessionStorage.setItem(chave, JSON.stringify(valor));
-  } catch { /* navegacao privada sem storage: segue so em memoria */ }
+  } catch { /* fica so na memoria */ }
 }
 
 export const modoLocal = config.modo === "local";
@@ -39,6 +54,10 @@ function redirecionamento() {
 }
 
 export async function entrar(destino = location.hash) {
+  if (!armazenamentoDisponivel()) {
+    throw new Error("O navegador está bloqueando os dados do site, e o login precisa deles para " +
+                    "voltar do Cognito. Permita dados do site (ou saia da navegação privada) e tente de novo.");
+  }
   const verificador = aleatorio(48);
   const estado = aleatorio(16);
   const desafio = base64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verificador)));

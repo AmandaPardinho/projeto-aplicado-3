@@ -20,9 +20,10 @@ Toda rota exige login, e toda acao, inclusive leitura, gera registro AUD#.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Callable
 
@@ -208,7 +209,7 @@ def detalhar_calibracao(usuario: Usuario, ctx: Contexto, evento: dict):
     item = _carregar_calibracao(usuario, ctx, evento)
     corpo = {"calibracao": _sem_chaves(item)}
     if item["status"] in ("AGUARDANDO_REVISAO", "EMITINDO"):
-        resultado = revisao.revisar(item, ctx.repositorio.padrao(item["padrao_codigo"]),
+        resultado = revisao.revisar(item, revisao.padrao_da_calibracao(item, ctx.repositorio),
                                     ctx.repositorio.instrumento(item["tag"]), ctx.hoje)
         corpo["revisao"] = resultado.como_dict()
     elif item.get("numero_certificado"):
@@ -269,20 +270,34 @@ def listar_quarentena(usuario: Usuario, ctx: Contexto, evento: dict):
 def _situacao_instrumento(ultimo: dict | None, instrumento: dict, hoje: date) -> dict:
     if not ultimo:
         return {"situacao": "SEM_CERTIFICADO", "proxima_calibracao": None}
-    emitido = date.fromisoformat(ultimo["emitido_em"][:10])
+    # A periodicidade conta da data da medicao, nao da emissao (certificados
+    # antigos, sem data_calibracao, caem na emissao)
+    base = date.fromisoformat((ultimo.get("data_calibracao") or ultimo["emitido_em"])[:10])
     meses = int(instrumento.get("periodicidade_meses") or 12)
-    mes = emitido.month - 1 + meses
-    ano, mes = emitido.year + mes // 12, mes % 12 + 1
-    proxima = date(ano, mes, min(emitido.day, 28))
+    mes = base.month - 1 + meses
+    ano, mes = base.year + mes // 12, mes % 12 + 1
+    # 31/01 + 1 mes -> 28 ou 29/02: o ultimo dia do mes, nao um dia fixo
+    proxima = date(ano, mes, min(base.day, calendar.monthrange(ano, mes)[1]))
     return {"situacao": "VENCIDO" if proxima < hoje else "EM_DIA",
             "proxima_calibracao": proxima.isoformat()}
+
+
+# Canais que o navegador pode declarar; "sistema" fica so para as Lambdas
+CANAIS_DA_CONSULTA = {"teclado", "leitor", "camera", "pwa"}
+
+
+def _canal_da_consulta(evento: dict) -> str:
+    canal = (evento.get("queryStringParameters") or {}).get("canal", "teclado")
+    if canal not in CANAIS_DA_CONSULTA:
+        raise ErroDeNegocio(f"canal de consulta inválido: {canal}", 400)
+    return canal
 
 
 def consultar_instrumento(usuario: Usuario, ctx: Contexto, evento: dict):
     """Consulta pelo TAG: mesma resposta no computador e no PWA; sempre auditada."""
     usuario.exigir("consultar_instrumento")
     tag = evento["pathParameters"]["tag"].strip()
-    canal = (evento.get("queryStringParameters") or {}).get("canal", "teclado")
+    canal = _canal_da_consulta(evento)
     instrumento = ctx.repositorio.instrumento(tag)
     auditoria.registrar(ctx.repositorio, usuario.login, "consultar_instrumento",
                         f"INST#{tag}", canal, {"encontrado": bool(instrumento)})
@@ -301,7 +316,7 @@ def consultar_instrumento(usuario: Usuario, ctx: Contexto, evento: dict):
 def historico_instrumento(usuario: Usuario, ctx: Contexto, evento: dict):
     usuario.exigir("consultar_instrumento")
     tag = evento["pathParameters"]["tag"].strip()
-    canal = (evento.get("queryStringParameters") or {}).get("canal", "teclado")
+    canal = _canal_da_consulta(evento)
     certificados = ctx.repositorio.certificados_do_instrumento(tag)
     auditoria.registrar(ctx.repositorio, usuario.login, "consultar_historico", f"INST#{tag}", canal)
     return 200, {"tag": tag, "certificados": [
@@ -361,7 +376,7 @@ def detalhar_padrao(usuario: Usuario, ctx: Contexto, evento: dict):
 
 
 def atualizar_padrao(usuario: Usuario, ctx: Contexto, evento: dict):
-    """UC03: nova versao vigente; a anterior fica no historico V#<data>."""
+    """UC03: nova versao vigente; a anterior fica no historico V#<momento>."""
     usuario.exigir("atualizar_padrao")
     codigo = evento["pathParameters"]["codigo"]
     atual = ctx.repositorio.padrao(codigo)
@@ -385,15 +400,38 @@ def atualizar_padrao(usuario: Usuario, ctx: Contexto, evento: dict):
         raise ErroDeNegocio("os valores do orçamento de incerteza devem ser números", 400) from exc
     momento = iso(agora())
     novo.update(atualizado_em=momento, atualizado_por=usuario.login)
-    historico = {k: v for k, v in novo.items() if k not in ("GSI1PK", "GSI1SK")}
-    historico.update(chave_padrao(codigo, f"V#{novo['data_ultima_calibracao']}"))
-    ctx.repositorio.transacao([
-        {"Put": {"Item": novo}},
-        {"Put": {"Item": historico}},
-        {"Put": {"Item": auditoria.item_auditoria(
-            usuario.login, "atualizar_padrao", f"PADRAO#{codigo}", CANAL_WEB,
-            {"campos": sorted(k for k in CAMPOS_DO_PADRAO if k in corpo)})}},
-    ])
+    # O historico guarda a versao que sai de vigor, com quando e por quem foi
+    # substituida. A chave leva o momento em microssegundos: duas correcoes no
+    # mesmo segundo nao se sobrescrevem e o historico continua em ordem.
+    anterior = {k: v for k, v in atual.items() if k not in ("GSI1PK", "GSI1SK")}
+    anterior.update(chave_padrao(codigo, "V#" + datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")),
+                    substituido_em=momento, substituido_por=usuario.login)
+    # Concorrencia otimista por numero de versao (atualizado_em tem resolucao
+    # de segundos e repetiria): se outra pessoa salvou entre a leitura e a
+    # gravacao, a versao dela nao some sem ir para o historico
+    lida = atual.get("versao")
+    novo["versao"] = int(lida or 0) + 1
+    if lida is None:
+        condicao = {"ConditionExpression": "attribute_not_exists(versao)"}
+    else:
+        condicao = {"ConditionExpression": "versao = :lida",
+                    "ExpressionAttributeValues": {":lida": lida}}
+    try:
+        ctx.repositorio.transacao([
+            {"Put": {"Item": novo, **condicao}},
+            {"Put": {"Item": anterior}},
+            {"Put": {"Item": auditoria.item_auditoria(
+                usuario.login, "atualizar_padrao", f"PADRAO#{codigo}", CANAL_WEB,
+                {"campos": sorted(k for k in CAMPOS_DO_PADRAO if k in corpo)})}},
+        ])
+    except ClientError as exc:
+        # So a condicao do primeiro Put (a versao) e conflito de edicao; outro
+        # cancelamento (capacidade, conflito transacional) segue como erro
+        motivos = exc.response.get("CancellationReasons") or [{}]
+        if motivos[0].get("Code") == "ConditionalCheckFailed":
+            raise ErroDeNegocio("o padrão foi alterado por outra pessoa; recarregue e tente de novo",
+                                409) from exc
+        raise
     return 200, {"padrao": _sem_chaves(novo)}
 
 

@@ -51,10 +51,14 @@ def processar(evento: dict, repositorio: Repositorio, s3, hoje: date | None = No
         raise ErroDeNegocio(f"calibração com status {calibracao['status']} não pode ser emitida", 409)
 
     instrumento = repositorio.instrumento(tag)
-    padrao = repositorio.padrao(calibracao["padrao_codigo"])
+    padrao = revisao.padrao_da_calibracao(calibracao, repositorio)
     signatario = repositorio.metrologista(matricula)
     if not signatario or not signatario.get("pode_assinar_certificado"):
         raise ErroDeNegocio("RN05: usuário não é signatário autorizado", 403)
+    # Segregacao de funcoes: quem enviou ou executou a medicao nao assina o
+    # proprio certificado, mesmo tendo os dois perfis
+    if login == calibracao.get("enviado_por") or matricula == calibracao.get("tecnico_matricula"):
+        raise ErroDeNegocio("quem enviou ou executou a calibração não pode assinar o certificado", 403)
     resultado = revisao.revisar(calibracao, padrao, instrumento, hoje)
     if resultado.bloqueios:
         raise ErroDeNegocio("emissão bloqueada", 422, list(resultado.bloqueios))
@@ -96,6 +100,7 @@ def processar(evento: dict, repositorio: Repositorio, s3, hoje: date | None = No
         "setor": instrumento.get("setor"),
         "calibracao_id": calibracao_id,
         "situacao": resultado.parecer.situacao,
+        "data_calibracao": calibracao.get("data_hora_medicao"),
         "emitido_em": iso(momento),
         "emitido_por": login,
         "pdf_s3": f"s3://{bucket}/{chave_pdf}",

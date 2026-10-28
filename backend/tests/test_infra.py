@@ -64,10 +64,24 @@ def test_tabela_do_template_igual_a_dos_testes(template):
     gsi = propriedades["GlobalSecondaryIndexes"][0]
     assert gsi["IndexName"] == local["GlobalSecondaryIndexes"][0]["IndexName"]
     assert gsi["KeySchema"] == local["GlobalSecondaryIndexes"][0]["KeySchema"]
-    # Camada gratuita: 25 RCU/WCU no total (AV2: 20/20)
-    total = propriedades["ProvisionedThroughput"]["ReadCapacityUnits"] + \
-        gsi["ProvisionedThroughput"]["ReadCapacityUnits"]
-    assert total <= 25
+    assert propriedades["BillingMode"] == "PROVISIONED"
+    # Camada gratuita: 25 RCU e 25 WCU no total, somando tabela e indices
+    for unidade in ("ReadCapacityUnits", "WriteCapacityUnits"):
+        total = propriedades["ProvisionedThroughput"][unidade] + sum(
+            g["ProvisionedThroughput"][unidade] for g in propriedades["GlobalSecondaryIndexes"])
+        assert total <= 25, unidade
+
+
+def test_quarentena_expira_no_dynamodb_e_no_s3(template):
+    from handlers.ingestao import DIAS_NA_QUARENTENA
+
+    ttl = template["Resources"]["Tabela"]["Properties"]["TimeToLiveSpecification"]
+    assert ttl == {"AttributeName": "expira_em", "Enabled": True}
+    regras = {r["Prefix"]: r["ExpirationInDays"] for r in template["Resources"]["BucketEntrada"]
+              ["Properties"]["LifecycleConfiguration"]["Rules"] if r["Status"] == "Enabled"}
+    assert regras["quarentena/"] == DIAS_NA_QUARENTENA
+    # Nada no bucket de entrada fica para sempre
+    assert {"entrada/", "logs/", "quarentena/"} <= set(regras)
 
 
 def test_ingestao_so_dispara_em_entrada(template):
@@ -137,6 +151,39 @@ def test_seed_cria_usuarios_com_perfil_matricula_e_setor(cognito):
     # Segunda execucao nao troca senha de quem ja existe
     assert not any(seed.criar_usuarios(cliente, pool).values())
     assert all(seed.criar_usuarios(cliente, pool, novas_senhas=True).values())
+
+
+def test_seed_tira_grupo_que_sobrou(cognito):
+    import seed
+
+    cliente, pool = cognito
+    seed.criar_usuarios(cliente, pool)
+    cliente.admin_add_user_to_group(UserPoolId=pool, Username="consulta.usinagem",
+                                    GroupName="signatario")
+    seed.criar_usuarios(cliente, pool)
+    grupos = cliente.admin_list_groups_for_user(UserPoolId=pool, Username="consulta.usinagem")
+    assert {g["GroupName"] for g in grupos["Groups"]} == {"consulta"}
+
+
+def test_seed_da_senha_nova_a_quem_nao_esta_no_arquivo(cognito):
+    import seed
+
+    cliente, pool = cognito
+    seed.criar_usuarios(cliente, pool)
+    # Arquivo de senhas perdido, menos uma entrada
+    senhas = seed.criar_usuarios(cliente, pool, senhas_conhecidas={"tecnico.exemplo"})
+    assert senhas["tecnico.exemplo"] is None
+    assert all(v for k, v in senhas.items() if k != "tecnico.exemplo")
+
+
+def test_arquivo_de_senhas_nasce_privado(tmp_path, monkeypatch):
+    import seed
+
+    monkeypatch.setattr(seed, "ARQUIVO_SENHAS", tmp_path / "senhas.txt")
+    seed.gravar_senhas({"a": "x1", "b": None}, "https://d1.cloudfront.net")
+    seed.gravar_senhas({"b": "y2"}, "https://d1.cloudfront.net")
+    assert seed.ler_senhas() == {"a": "x1", "b": "y2"}
+    assert (tmp_path / "senhas.txt").stat().st_mode & 0o777 == 0o600
 
 
 def test_seed_nao_sobrescreve_padrao_atualizado(aws):

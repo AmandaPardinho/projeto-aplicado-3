@@ -149,10 +149,24 @@ class Repositorio:
         return self.obter(chave_padrao(codigo))
 
     def historico_padrao(self, codigo: str) -> list[dict]:
-        resposta = self.tabela.query(
+        return self._consultar_tudo(
             KeyConditionExpression=Key("PK").eq(f"PADRAO#{codigo}") & Key("SK").begins_with("V#"),
             ScanIndexForward=False)
-        return resposta["Items"]
+
+    def padrao_na_data(self, codigo: str, dia: str) -> Optional[dict]:
+        """Versao do padrao cuja calibracao cobre o dia (AAAA-MM-DD) da medicao.
+
+        Se o padrao foi recalibrado entre a medicao e o envio, a versao usada na
+        medicao esta no historico. Sem versao que cubra o dia, devolve a ATUAL
+        e a RN04 da revisao aponta o problema.
+        """
+        atual = self.padrao(codigo)
+        if atual is None or atual["data_ultima_calibracao"] <= dia:
+            return atual
+        for versao in self.historico_padrao(codigo):  # mais recente primeiro
+            if versao["data_ultima_calibracao"] <= dia <= versao["data_proxima_calibracao"]:
+                return versao
+        return atual
 
     def padroes(self) -> list[dict]:
         return self._consultar_gsi("PADRAO")
@@ -194,35 +208,31 @@ class Repositorio:
 
     def certificados_do_instrumento(self, tag: str) -> list[dict]:
         """RF11: historico por TAG, mais recente primeiro."""
-        resposta = self.tabela.query(
+        return self._consultar_tudo(
             IndexName="GSI1",
             KeyConditionExpression=Key("GSI1PK").eq(f"INST#{tag}") & Key("GSI1SK").begins_with("CERT#"),
             ScanIndexForward=False)
-        return resposta["Items"]
 
     def auditoria(self, dia: str) -> list[dict]:
-        resposta = self.tabela.query(KeyConditionExpression=Key("PK").eq(f"AUD#{dia}"),
-                                     ScanIndexForward=False)
-        return resposta["Items"]
+        return self._consultar_tudo(KeyConditionExpression=Key("PK").eq(f"AUD#{dia}"),
+                                    ScanIndexForward=False)
 
     def laboratorio(self) -> dict:
         return self.obter(CHAVE_LABORATORIO) or {}
 
     def _consultar_gsi(self, gsi1pk: str, recentes_primeiro: bool = False) -> list[dict]:
-        itens, inicio = [], None
+        return self._consultar_tudo(IndexName="GSI1", KeyConditionExpression=Key("GSI1PK").eq(gsi1pk),
+                                    ScanIndexForward=not recentes_primeiro)
+
+    def _consultar_tudo(self, **argumentos: Any) -> list[dict]:
+        """Query com todas as paginas: o DynamoDB corta cada resposta em 1 MB."""
+        itens = []
         while True:
-            argumentos: dict[str, Any] = {
-                "IndexName": "GSI1",
-                "KeyConditionExpression": Key("GSI1PK").eq(gsi1pk),
-                "ScanIndexForward": not recentes_primeiro,
-            }
-            if inicio:
-                argumentos["ExclusiveStartKey"] = inicio
             resposta = self.tabela.query(**argumentos)
             itens.extend(resposta["Items"])
-            inicio = resposta.get("LastEvaluatedKey")
-            if not inicio:
+            if "LastEvaluatedKey" not in resposta:
                 return itens
+            argumentos["ExclusiveStartKey"] = resposta["LastEvaluatedKey"]
 
     # --- escritas ---------------------------------------------------------
 

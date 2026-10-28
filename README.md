@@ -69,7 +69,7 @@ O servidor roda as mesmas Lambdas com DynamoDB e S3 simulados em memória. A tel
 |---|---|
 | Técnico | envio do relatório; fila e quarentena só do que enviou |
 | Revisor | fila, revisão (GUM + banda de guarda), cancelamento |
-| Signatário | tudo do revisor + emissão do certificado (RN05) |
+| Signatário | tudo do revisor + emissão do certificado (RN05), menos das calibrações que ele mesmo enviou ou executou |
 | Admin. de padrões | cadastro e atualização dos padrões (UC03) |
 | Consulta | situação do instrumento por TAG/QR e download do certificado do próprio setor |
 | Auditor | trilha de auditoria por dia, com usuário, ação, alvo e canal |
@@ -109,7 +109,7 @@ python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
 | API Gateway (HTTP API) | autorizador JWT do Cognito em todas as rotas, CORS só para o endereço do CloudFront, limite de 10 req/s | 1 milhão de chamadas/mês (12 meses) |
 | Lambda | `schulz-fn-api`, `schulz-fn-ingestao` (evento do S3 em `entrada/`), `schulz-fn-emissao`; logs por 14 dias | 1 milhão de invocações/mês |
 | DynamoDB | `schulz-certificacao`, tabela única + GSI1, 20 RCU / 20 WCU | 25 RCU / 25 WCU |
-| S3 | entrada (quarentena apaga em 90 dias), certificados (versionamento + Object Lock), site | 5 GB (12 meses) |
+| S3 | entrada (quarentena apaga em 90 dias; originais e logs em 1 ano), certificados (versionamento + Object Lock), site | 5 GB (12 meses) |
 | CloudFront | site com acesso só pelo CloudFront (OAC) e cabeçalhos de segurança | 1 TB/mês |
 | SQS | fila de falhas da ingestão | 1 milhão de requisições/mês |
 | CloudWatch, SNS, Budgets | 3 alarmes e orçamento de US$ 1, se houver `EMAIL_ALERTAS` | 10 alarmes, 2 orçamentos |
@@ -162,7 +162,7 @@ SCHULZ_REPORT_REAL="/caminho/Registro_MMC.xlsx" python -m pytest tests/test_gum.
 ## Fluxo
 
 1. **Pedido de envio** (`POST /calibracoes/upload`): o técnico escolhe TAG, padrão e temperatura. A API confere TAG e validade do padrão (RN04) e devolve uma URL de upload direto ao S3 (10 min, até 5 MB).
-2. **Ingestão** (S3 → fn-ingestao): hash SHA-256 (RH17), leitura do Report, saneamento, validação do metrologista (RH07), de-para do código da MMC (RH08) e dupla referência instrumento + padrão (RN10). Qualquer regra bloqueante leva o arquivo para `quarentena/` com a regra, a célula e o valor bruto.
-3. **Revisão** (`GET /calibracoes/{tag}/{id}`): GUM, banda de guarda e bloqueios calculados na hora.
-4. **Emissão** (`POST /calibracoes/{tag}/{id}/emitir`): só signatário autorizado (grupo no token e atributo no cadastro, RN05). Número reservado em contador atômico; uma nova tentativa reaproveita o número.
+2. **Ingestão** (S3 → fn-ingestao): hash SHA-256 (RH17), leitura do Report, saneamento, validação do metrologista (RH07), de-para do código da MMC (RH08) e dupla referência instrumento + padrão (RN10; o plano de medição precisa trazer a TAG). A calibração guarda uma cópia do padrão vigente: revisão e emissão usam essa cópia, mesmo que o padrão seja atualizado depois. Qualquer regra bloqueante leva o arquivo para `quarentena/` com a regra, a célula e o valor bruto.
+3. **Revisão** (`GET /calibracoes/{tag}/{id}`): GUM, banda de guarda e bloqueios calculados na hora. A banda de guarda usa o U calculado; o certificado imprime U arredondado a 3 casas. A RN04 confere se o padrão estava válido na data da medição.
+4. **Emissão** (`POST /calibracoes/{tag}/{id}/emitir`): só signatário autorizado (grupo no token e atributo no cadastro, RN05), e nunca quem enviou ou executou a calibração. Número reservado em contador atômico; uma nova tentativa reaproveita o número.
 5. **Consulta** (`GET /instrumentos/{tag}`): mesma resposta no computador (TAG digitada, leitor USB, webcam) e no PWA. Sempre com login e sempre registrada na auditoria, com o canal usado.

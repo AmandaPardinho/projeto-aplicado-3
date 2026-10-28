@@ -8,8 +8,10 @@ planilha compara com (nominal - Tol.-), e como Tol.- ja vem negativo (-0,01)
 o limite inferior fica acima do nominal e marca "Rep" em todo diametro. Aqui o
 limite inferior e nominal - |Tol.-|, que e o que a regra descreve.
 
-O U usado e o mesmo do certificado: um valor por calibracao, em mm, ja
-arredondado (Registro!D66).
+O U e um valor por calibracao, em mm, com a precisao do calculo GUM. O
+certificado imprime U arredondado a 3 casas (Registro!D66), mas a decisao nao
+usa o arredondado: arredondar para baixo antes de comparar aprovaria uma
+media que, com o U real, passa do limite.
 """
 from __future__ import annotations
 

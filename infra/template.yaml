@@ -68,6 +68,9 @@ Resources:
           Projection: { ProjectionType: ALL }
           ProvisionedThroughput: { ReadCapacityUnits: 5, WriteCapacityUnits: 5 }
       SSESpecification: { SSEEnabled: true }
+      # Itens de quarentena levam expira_em (ingestao.DIAS_NA_QUARENTENA): somem
+      # junto com o arquivo do S3, e a lista nao aponta para objeto apagado
+      TimeToLiveSpecification: { AttributeName: expira_em, Enabled: true }
 
   # Relatorios enviados (entrada/), recusados (quarentena/) e logs da ingestao.
   # O navegador envia direto com o presigned POST, por isso o CORS.
@@ -95,6 +98,17 @@ Resources:
             Status: Enabled
             Prefix: quarentena/
             ExpirationInDays: 90
+          # Originais e logs: um ano cobre o ciclo de calibracao e mantem o
+          # bucket na camada gratuita (5 GB). O SHA-256 do original fica no
+          # DynamoDB e o certificado fica no bucket com Object Lock.
+          - Id: entrada-1-ano
+            Status: Enabled
+            Prefix: entrada/
+            ExpirationInDays: 365
+          - Id: logs-1-ano
+            Status: Enabled
+            Prefix: logs/
+            ExpirationInDays: 365
 
   # PDFs emitidos: versionamento + Object Lock (o certificado nao muda depois
   # de emitido). Fica retido se a pilha for removida.

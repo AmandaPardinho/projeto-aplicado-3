@@ -26,6 +26,7 @@ from botocore.exceptions import ClientError
 
 from schulz import auditoria
 from schulz.calypso import RelatorioInvalidoError, Violacao, ler_relatorio
+from schulz.revisao import padrao_congelado
 from schulz.repositorio import (Repositorio, agora, chave_arquivo, chave_calibracao,
                                 chave_instrumento, chave_padrao, chave_quarentena, iso)
 
@@ -91,7 +92,12 @@ def processar(bucket: str, chave: str, s3, repositorio: Repositorio) -> dict:
             violacoes.append(Violacao(
                 "RN10", f"o relatório foi medido no padrão {codigo_padrao}, "
                 f"mas o envio indicou {meta['padrao']}", valor_bruto=relatorio.codigo_mmc))
-    if relatorio.tag_do_plano and relatorio.tag_do_plano != tag:
+    # Sem TAG no plano nao ha como provar que o relatorio e deste instrumento
+    if relatorio.tag_do_plano is None:
+        violacoes.append(Violacao("RN10", "o plano de medição não traz a TAG do instrumento "
+                                  "(esperado algo como 703.1208_...)",
+                                  valor_bruto=relatorio.plano))
+    elif relatorio.tag_do_plano != tag:
         violacoes.append(Violacao("RN10", f"o plano de medição é do instrumento "
                                   f"{relatorio.tag_do_plano}, não de {tag}",
                                   valor_bruto=relatorio.plano))
@@ -114,6 +120,11 @@ def processar(bucket: str, chave: str, s3, repositorio: Repositorio) -> dict:
         "tag": tag,
         "status": "AGUARDANDO_REVISAO",
         "padrao_codigo": meta["padrao"],
+        # Versao do padrao que valia no dia da medicao: revisao e emissao usam
+        # esta, e nao a que estiver ATUAL depois (UC03 pode trocar o cadastro)
+        "padrao_usado": padrao_congelado(
+            repositorio.padrao_na_data(meta["padrao"], relatorio.data_hora.date().isoformat())
+            if relatorio.data_hora else repositorio.padrao(meta["padrao"])),
         "temperatura_ambiente": temperatura,
         "enviado_por": login,
         "tecnico_matricula": tecnico["matricula"],

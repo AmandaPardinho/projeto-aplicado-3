@@ -11,7 +11,9 @@ const INTERVALO_MAXIMO_LEITOR_MS = 35;
 export function tagDoCodigo(texto) {
   const valor = (texto || "").trim();
   const rota = valor.match(/#\/consulta\/([^/?#\s]+)/);
-  if (rota) return decodeURIComponent(rota[1]);
+  if (rota) {
+    try { return decodeURIComponent(rota[1]); } catch { return rota[1]; }  // QR com "%" invalido
+  }
   return valor;
 }
 
@@ -53,6 +55,11 @@ export function lerQrPelaCamera(video) {
     fluxo = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: "environment" } }, audio: false,
     });
+    // Cancelado enquanto o navegador pedia permissao: desliga a camera ja
+    if (!ativo) {
+      parar();
+      return null;
+    }
     video.srcObject = fluxo;
     await video.play();
     while (ativo) {

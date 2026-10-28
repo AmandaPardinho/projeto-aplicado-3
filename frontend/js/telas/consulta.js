@@ -60,16 +60,19 @@ export async function tela(raiz, ctx, [tagDaRota]) {
   }
 
   async function abrirCamera() {
+    leitura?.cancelar();  // clique repetido: um leitor so
     video.hidden = false;
     montar(resultado, h("div", { class: "acoes" },
       h("button", { class: "botao", onclick: () => { leitura?.cancelar(); video.hidden = true; montar(resultado); } },
         "Fechar câmera")));
-    leitura = lerQrPelaCamera(video);
+    const minha = (leitura = lerQrPelaCamera(video));
     try {
-      const texto = await leitura.promessa;
+      const texto = await minha.promessa;
+      if (leitura !== minha) return;  // substituida por outro clique: a nova cuida da tela
       video.hidden = true;
       if (texto) consultarPorEntrada(tagDoCodigo(texto), "camera");
     } catch (exc) {
+      if (leitura !== minha) return;
       video.hidden = true;
       montar(resultado, aviso(`Não foi possível usar a câmera: ${exc.message}`, "erro"));
     }

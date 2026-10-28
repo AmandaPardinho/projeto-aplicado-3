@@ -11,11 +11,13 @@ a menos que se passe --sobrescrever.
 
 Os usuarios sao os de USUARIOS_TESTE, um por perfil, com senha aleatoria. As
 senhas aparecem na tela e ficam em infra/senhas-teste.txt (fora do git). Para
-um usuario que ja existe a senha so muda com --novas-senhas.
+um usuario que ja existe a senha so muda com --novas-senhas, ou quando ele nao
+esta no arquivo. Os grupos ficam exatamente os de USUARIOS_TESTE.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -59,8 +61,14 @@ def gerar_senha() -> str:
     return f"{secrets.token_urlsafe(12)}Aa7!"
 
 
-def criar_usuarios(cognito, pool_id: str, novas_senhas: bool = False) -> dict:
-    """Cria (ou completa) os usuarios de teste; devolve {login: senha nova ou None}."""
+def criar_usuarios(cognito, pool_id: str, novas_senhas: bool = False,
+                   senhas_conhecidas: set | None = None) -> dict:
+    """Cria (ou completa) os usuarios de teste; devolve {login: senha nova ou None}.
+
+    senhas_conhecidas: logins cuja senha ja esta no arquivo. Um usuario que ja
+    existe mas nao esta ali (arquivo perdido, outra maquina) ganha senha nova,
+    senao ninguem saberia entrar com ele.
+    """
     senhas = {}
     for login, perfil in USUARIOS_TESTE.items():
         atributos = [{"Name": f"custom:{campo}", "Value": perfil[campo]}
@@ -75,12 +83,32 @@ def criar_usuarios(cognito, pool_id: str, novas_senhas: bool = False) -> dict:
                 cognito.admin_update_user_attributes(UserPoolId=pool_id, Username=login,
                                                      UserAttributes=atributos)
         senhas[login] = None
-        if novo or novas_senhas:
+        sem_senha_conhecida = senhas_conhecidas is not None and login not in senhas_conhecidas
+        if novo or novas_senhas or sem_senha_conhecida:
             senhas[login] = gerar_senha()
             cognito.admin_set_user_password(UserPoolId=pool_id, Username=login,
                                             Password=senhas[login], Permanent=True)
-        for grupo in perfil["grupos"]:
-            cognito.admin_add_user_to_group(UserPoolId=pool_id, Username=login, GroupName=grupo)
+        _acertar_grupos(cognito, pool_id, login, set(perfil["grupos"]))
+    return senhas
+
+
+def _acertar_grupos(cognito, pool_id: str, login: str, grupos: set) -> None:
+    """Deixa o usuario exatamente nos grupos da lista: tira os que sobraram."""
+    atuais = {g["GroupName"] for g in cognito.admin_list_groups_for_user(
+        UserPoolId=pool_id, Username=login)["Groups"]}
+    for grupo in grupos - atuais:
+        cognito.admin_add_user_to_group(UserPoolId=pool_id, Username=login, GroupName=grupo)
+    for grupo in atuais - grupos:
+        cognito.admin_remove_user_from_group(UserPoolId=pool_id, Username=login, GroupName=grupo)
+
+
+def ler_senhas() -> dict:
+    senhas = {}
+    if ARQUIVO_SENHAS.exists():
+        for linha in ARQUIVO_SENHAS.read_text().splitlines():
+            if "\t" in linha and not linha.startswith("#"):
+                login, senha = linha.split("\t", 1)
+                senhas[login] = senha
     return senhas
 
 
@@ -88,16 +116,14 @@ def gravar_senhas(senhas: dict, url_app: str) -> None:
     novas = {k: v for k, v in senhas.items() if v}
     if not novas:
         return
-    antigas = {}
-    if ARQUIVO_SENHAS.exists():
-        for linha in ARQUIVO_SENHAS.read_text().splitlines():
-            if "\t" in linha and not linha.startswith("#"):
-                login, senha = linha.split("\t", 1)
-                antigas[login] = senha
+    antigas = ler_senhas()
     antigas.update(novas)
     linhas = [f"# Usuarios de teste da PoC - {url_app}", "# login\tsenha"]
     linhas += [f"{login}\t{senha}" for login, senha in antigas.items()]
-    ARQUIVO_SENHAS.write_text("\n".join(linhas) + "\n")
+    # Criado ja com 0600: nem por um instante fica legivel por outros usuarios
+    descritor = os.open(ARQUIVO_SENHAS, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descritor, "w") as arquivo:
+        arquivo.write("\n".join(linhas) + "\n")
     ARQUIVO_SENHAS.chmod(0o600)
 
 
@@ -120,7 +146,8 @@ def main():
     print(f"Cadastros: {contagem['gravados']} gravados, {contagem['mantidos']} já existiam.")
 
     cognito = boto3.client("cognito-idp", region_name=opcoes.regiao)
-    senhas = criar_usuarios(cognito, saidas["CognitoPoolId"], opcoes.novas_senhas)
+    senhas = criar_usuarios(cognito, saidas["CognitoPoolId"], opcoes.novas_senhas,
+                            senhas_conhecidas=set(ler_senhas()))
     gravar_senhas(senhas, saidas["UrlApp"])
     print("Usuários de teste:")
     for login, senha in senhas.items():

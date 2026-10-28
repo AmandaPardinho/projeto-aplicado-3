@@ -52,6 +52,16 @@ def padrao_vencido(padrao: dict, hoje: date) -> bool:
     return date.fromisoformat(padrao["data_proxima_calibracao"]) < hoje
 
 
+def padrao_congelado(padrao: dict) -> dict:
+    """Copia do cadastro do padrao sem as chaves, para guardar na calibracao."""
+    return {k: v for k, v in padrao.items() if k not in ("PK", "SK", "GSI1PK", "GSI1SK")}
+
+
+def padrao_da_calibracao(calibracao: dict, repositorio) -> dict:
+    """O padrao congelado na ingestao; calibracoes antigas caem no ATUAL."""
+    return calibracao.get("padrao_usado") or repositorio.padrao(calibracao["padrao_codigo"])
+
+
 def campos_pendentes(instrumento: dict) -> list[str]:
     pendentes = []
     for campo in CAMPOS_OBRIGATORIOS_INSTRUMENTO:
@@ -68,12 +78,22 @@ def revisar(calibracao: dict, padrao: dict, instrumento: dict, hoje: date) -> Re
         [c["valor_nominal"] for c in caracteristicas],
         gum.ParametrosMMC.de_item(padrao["orcamento"]),
     )
-    parecer = conformidade.avaliar_calibracao(caracteristicas, incerteza.incerteza_expandida_mm)
+    # Decisao com o U calculado; o arredondado (3 casas) e so o que se imprime.
+    # Com o arredondado, media + 0,0020769 passaria por media + 0,002 no limite.
+    parecer = conformidade.avaliar_calibracao(caracteristicas,
+                                              incerteza.incerteza_expandida_um / gum.MIL)
 
     bloqueios = []
-    if padrao_vencido(padrao, hoje):
+    # RN04 na revisao: o padrao tinha de estar valido quando a medicao foi
+    # feita. O envio com padrao vencido hoje ja e barrado no pedido de upload.
+    medicao = calibracao.get("data_hora_medicao")
+    if padrao_vencido(padrao, date.fromisoformat(medicao[:10]) if medicao else hoje):
         bloqueios.append(f"RN04: padrão {padrao['codigo']} com calibração vencida em "
                          f"{data_br(padrao['data_proxima_calibracao'])}")
+    elif medicao and medicao[:10] < padrao["data_ultima_calibracao"]:
+        bloqueios.append(f"RN04: medição de {data_br(medicao)} anterior à calibração do padrão "
+                         f"{padrao['codigo']} ({data_br(padrao['data_ultima_calibracao'])}) "
+                         "e sem versão do padrão que cubra essa data")
     angulos = [c["nome"] for c in caracteristicas if "angulo" in normalizar(c["grandeza"])]
     if angulos:
         bloqueios.append("RN06: medição de ângulo ainda sem suporte (" + ", ".join(angulos) + ")")
