@@ -1,74 +1,76 @@
-# MVP — Automação da Emissão de Certificados de Calibração
+# Automação da Emissão de Certificados de Calibração — Schulz S.A.
 
 Projeto Aplicado III · Grupo 4 · UniSENAI Florianópolis
 Empresa parceira: Schulz S.A. · Orientador: Prof. MSc. Hugo Menezes Barra
 
-Aplicação web transacional (AV3 — Construção da Aplicação Transacional do MVP) que recebe a planilha de leituras exportada do Calypso, aplica as regras metrológicas definidas no Tema 01 e apresenta o parecer de conformidade numa interface simples.
+Prova de conceito serverless na AWS (camada gratuita) que recebe o relatório bruto do Calypso exportado pela MMC, aplica o saneamento do Tema 01, calcula a incerteza pela metodologia GUM, avalia a conformidade com banda de guarda e emite o certificado em PDF com QR Code. A arquitetura é a da AV2: Cognito, API Gateway (HTTP API), três funções Lambda, DynamoDB em tabela única e S3.
 
-## O que a aplicação faz
+## Situação
 
-1. Recebe o upload de uma planilha `.xlsx` com as leituras do instrumento e os valores do padrão (colunas `DIMENSION`, `NOMINAL`, `+TOL`, `-TOL`, `MEAS 1`, `MEAS 2`).
-2. Para cada característica avaliada:
-   - calcula a **média** das duas medições (RN01 do Tema 01 exige exatamente duas);
-   - calcula o **erro sistemático** (média − valor nominal);
-   - compara o erro absoluto com o **Limite de Erro Admissível** (a tolerância `+TOL`/`-TOL`), classificando como `DENTRO_DA_TOLERANCIA` ou `FORA_DA_TOLERANCIA`.
-3. Atribui o **parecer final**: `APROVADO` se todas as características estiverem dentro da tolerância, `REPROVADO` caso qualquer uma esteja fora.
-4. Apresenta o resultado numa tabela, com a linha da(s) característica(s) reprovada(s) destacada.
+| Fase | Conteúdo | Situação |
+|---|---|---|
+| 1 — Backend | parser do Calypso, GUM, banda de guarda, PDF, fn-api / fn-ingestao / fn-emissao, testes | concluída |
+| 2 — Frontend | SPA + PWA com login, revisão, emissão, consulta por TAG/QR e trilha de auditoria | a fazer |
+| 3 — Infraestrutura | template AWS SAM, `deploy.sh`, carga inicial | a fazer |
+| 4 — Documentação | matriz de rastreabilidade, roteiro de deploy, relatório e vídeo | a fazer |
 
-Se alguma característica tiver campo numérico ausente ou inválido, a planilha é **recusada** (HTTP 422) com a indicação das linhas a corrigir; o sistema nunca emite parecer sobre dados parciais.
+O MVP Flask da AV3 está em [`legado-av3/`](legado-av3/) e na tag `av3`.
 
-A leitura da planilha reaproveita as regras de higienização já definidas no Tema 01 (RH01 — nulos textuais, RH04 — espaços em branco, RH09 — descarte de linhas de característica vazias).
+## Estrutura
 
-## Como rodar localmente
+```text
+backend/
+  schulz/                 núcleo (sem dependência de AWS, exceto repositorio/auditoria)
+    xlsx.py               abertura do workbook, com reparo do formato OOXML Strict (RNF02)
+    calypso.py            leitura e saneamento do Report do Calypso (RF02, RH01–RH17, RN01)
+    gum.py                orçamento GUM do bloco volumétrico da MMC (RF03, RF04, RN03)
+    conformidade.py       banda de guarda (RN02) e resumo de não conformidades (RF06)
+    revisao.py            bloqueios de emissão (RN04, RN06, RN08) e valores do certificado
+    certificado.py        PDF do certificado com QR Code (RF08)
+    repositorio.py        chaves e operações da tabela única do DynamoDB
+    autorizacao.py        grupos do Cognito e permissões por ação (RNF08, RN05)
+    auditoria.py          trilha AUD# de quem fez o quê, inclusive consultas
+    cadastros_exemplo.py  cadastros do caso 703.1208 (nomes de pessoas fictícios)
+  handlers/
+    api.py                fn-api: todas as rotas da HTTP API
+    ingestao.py           fn-ingestao: evento do S3, ETL, quarentena e persistência
+    emissao.py            fn-emissao: número, PDF, Object Lock e certificado imutável
+  tests/                  pytest + moto (DynamoDB e S3 simulados)
+docs/
+  achados-nas-planilhas.md  erros encontrados nas planilhas da Schulz
+legado-av3/               MVP Flask entregue na AV3
+```
+
+## Rodando os testes
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+source .venv/bin/activate
+pip install -r backend/requirements-dev.txt
 
-python3 sample_data/gerar_amostra.py   # gera as planilhas de teste
-python3 app.py                          # sobe em http://localhost:5000
+cd backend
+python -m pytest
 ```
 
-Abra `http://localhost:5000`, envie `sample_data/amostra_aprovado.xlsx` (todas as características dentro da tolerância) ou `sample_data/amostra_reprovado.xlsx` (uma característica fora, para testar o caminho de reprovação).
-
-## Rodando os testes automatizados
+Os testes geram relatórios no layout do Calypso com os valores reais do caso 703.1208. Para rodar também contra o arquivo real da Schulz (que não fica no repositório):
 
 ```bash
-pip install -r requirements.txt   # inclui o pytest
-python3 -m pytest tests/ -v
+SCHULZ_REPORT_REAL="/caminho/Registro_MMC.xlsx" python -m pytest tests/test_gum.py
 ```
 
-Para gerar os PDFs de evidência de testes (uma execução correta e uma falha simulada, feita só em uma cópia temporária do projeto):
+## Critério de aceite do cálculo (RF03)
 
-```bash
-python3 gerar_evidencia_testes.py   # grava em evidencias/
-```
+| Grandeza | Planilha da Schulz | Sistema |
+|---|---|---|
+| Incerteza combinada uc | 0,931344 µm | 0,931344 µm |
+| Graus de liberdade Veff | 12 | 12 |
+| Fator de abrangência k | 2,23 | 2,23 |
+| Incerteza expandida U | 2,076898 µm → 0,002 mm | 2,076898 µm → 0,002 mm |
 
-## Estrutura do projeto
+## Fluxo
 
-```
-app.py                     # rotas Flask (upload e processamento)
-calculo.py                 # regras de negócio e cálculos (testável isoladamente)
-templates/                 # upload.html, resultado.html
-static/style.css           # estilo da interface
-sample_data/                # gerador de planilhas de teste + amostras
-tests/test_calculo.py      # testes automatizados das regras de cálculo
-evidencias/                 # screenshots reais da aplicação em funcionamento
-```
-
-## Rastreabilidade com o Tema 01
-
-| Regra implementada | Origem no Tema 01 |
-|---|---|
-| Duas medições obrigatórias por característica | RN01 |
-| Erro sistemático = média − nominal | Seção "Regras de Negócio e Cálculos Metrológicos" do roteiro AV3 |
-| Comparação com tolerância (`+TOL`/`-TOL`) | Equivalente simplificado da banda de guarda da RN02 |
-| Parecer `APROVADO`/`REPROVADO` | RF06 (resumo de não conformidades) |
-| Nulos textuais, espaços, linhas vazias | RH01, RH04, RH09 |
-
-## Próximos passos (fora do escopo desta entrega)
-
-- Cálculo de incerteza de medição pela metodologia GUM (RF03/RF04), previsto para a etapa de MVP Parte 2.
-- Geração do certificado em PDF (RF08) e persistência em banco de dados.
-- Autenticação e perfis de acesso (RNF08).
+1. **Pedido de envio** (`POST /calibracoes/upload`): o técnico escolhe TAG, padrão e temperatura. A API confere TAG e validade do padrão (RN04) e devolve uma URL de upload direto ao S3 (10 min, até 5 MB).
+2. **Ingestão** (S3 → fn-ingestao): hash SHA-256 (RH17), leitura do Report, saneamento, validação do metrologista (RH07), de-para do código da MMC (RH08) e dupla referência instrumento + padrão (RN10). Qualquer regra bloqueante leva o arquivo para `quarentena/` com a regra, a célula e o valor bruto.
+3. **Revisão** (`GET /calibracoes/{tag}/{id}`): GUM, banda de guarda e bloqueios calculados na hora.
+4. **Emissão** (`POST /calibracoes/{tag}/{id}/emitir`): só signatário autorizado (grupo no token e atributo no cadastro, RN05). Número reservado em contador atômico; uma nova tentativa reaproveita o número.
+5. **Consulta** (`GET /instrumentos/{tag}`): mesma resposta no computador (TAG digitada, leitor USB, webcam) e no PWA. Sempre com login e sempre registrada na auditoria, com o canal usado.
