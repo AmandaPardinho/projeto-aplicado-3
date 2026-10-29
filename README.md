@@ -34,7 +34,7 @@ backend/
   handlers/
     api.py                fn-api: todas as rotas da HTTP API
     ingestao.py           fn-ingestao: evento do S3, ETL, quarentena e persistência
-    emissao.py            fn-emissao: número, PDF, Object Lock e certificado imutável
+    emissao.py            fn-emissao: número, PDF versionado com SHA-256 e certificado imutável
     site.py               fn-site: entrega o frontend pela Function URL (no lugar do CloudFront)
   tests/                  pytest + moto (DynamoDB e S3 simulados)
   servidor_local.py       roda as Lambdas + frontend sem AWS, para testar as telas
@@ -122,7 +122,7 @@ python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
 | API Gateway (HTTP API) | autorizador JWT do Cognito em todas as rotas, CORS só para o endereço do CloudFront, limite de 10 req/s | 1 milhão de chamadas/mês (12 meses) |
 | Lambda | `schulz-fn-api`, `schulz-fn-ingestao` (evento do S3 em `entrada/`), `schulz-fn-emissao`, `schulz-fn-site` (Function URL que entrega o site); todas com a `LabRole`; logs por 14 dias | 1 milhão de invocações/mês |
 | DynamoDB | `schulz-certificacao`, tabela única + GSI1, 20 RCU / 20 WCU | 25 RCU / 25 WCU |
-| S3 | entrada (quarentena apaga em 90 dias; originais e logs em 1 ano), certificados (versionamento + Object Lock), site (privado, lido pela `fn-site`) | 5 GB (12 meses) |
+| S3 | entrada (quarentena apaga em 90 dias; originais e logs em 1 ano), certificados (versionamento; SHA-256 e versão do PDF no DynamoDB), site (privado, lido pela `fn-site`) | 5 GB (12 meses) |
 | SQS | fila de falhas da ingestão | 1 milhão de requisições/mês |
 | CloudWatch, SNS, Budgets | 3 alarmes e orçamento de US$ 1, se houver `EMAIL_ALERTAS` | 10 alarmes, 2 orçamentos |
 
@@ -130,7 +130,7 @@ python infra/report_exemplo.py report.xlsx      # Report novo, com outro SHA-256
 
 | AV2 | PoC | Motivo |
 |---|---|---|
-| Object Lock em modo COMPLIANCE pelo prazo legal | modo GOVERNANCE, 1 dia (`DiasRetencaoCertificados`) | permitir limpar a conta depois da avaliação |
+| Object Lock em modo COMPLIANCE pelo prazo legal | sem Object Lock: versionamento + SHA-256 e `VersionId` do PDF no item imutável do certificado; o download usa essa versão | o AWS Academy nega `s3:PutBucketObjectLockConfiguration`. Sobrescrever ainda cria versão nova e a troca é detectada pelo hash, mas apagar a versão original deixa de ser impossível |
 | MFA para signatários | desligado | simplificar a demonstração |
 | alarmes completos e fn-contencao | 3 alarmes, sem contenção automática | escopo da PoC |
 | domínio próprio | endereço `*.lambda-url.us-east-1.on.aws` | sem custo de domínio |
@@ -157,7 +157,7 @@ aws s3 rm s3://schulz-entrada-<conta>-us-east-1 --recursive
 aws cloudformation delete-stack --stack-name schulz-pa3 --region us-east-1
 ```
 
-O bucket de certificados fica retido de propósito. Ele pode ser esvaziado e apagado pelo console depois que a retenção do Object Lock vencer.
+O bucket de certificados fica retido de propósito. Para apagá-lo, esvazie todas as versões pelo console (botão **Empty**) e depois apague o bucket.
 
 ## Rodando os testes
 

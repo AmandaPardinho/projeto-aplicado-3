@@ -123,6 +123,15 @@ def test_sem_cloudfront_e_site_pela_function_url(template):
     assert "URL_APP" in _funcoes(template)["FnEmissao"]["Properties"]["Environment"]["Variables"]
 
 
+def test_certificados_versionados_sem_object_lock(template):
+    # AWS Academy nega s3:PutBucketObjectLockConfiguration; o versionamento
+    # mantem a versao original, cujo VersionId e SHA-256 ficam no DynamoDB
+    bucket = template["Resources"]["BucketCertificados"]
+    assert bucket["DeletionPolicy"] == "Retain"
+    assert bucket["Properties"]["VersioningConfiguration"] == {"Status": "Enabled"}
+    assert not any(k.startswith("ObjectLock") for k in bucket["Properties"])
+
+
 def test_urls_pre_assinadas_regionais_e_sigv4():
     from handlers.api import _cliente_s3
 

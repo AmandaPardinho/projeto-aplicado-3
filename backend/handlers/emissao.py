@@ -7,7 +7,8 @@ Ordem pensada para nao deixar o sistema inconsistente se algo falhar no meio:
     2. reserva o numero no contador atomico e passa a calibracao a EMITINDO;
        uma nova tentativa reaproveita o numero ja reservado
     3. gera o PDF a partir da copia congelada dos valores
-    4. grava em certificados/<ano>/<numero>.pdf (Object Lock no bucket)
+    4. grava em certificados/<ano>/<numero>.pdf (bucket versionado; Object
+       Lock na AV2, indisponivel no AWS Academy)
     5. transacao: item imutavel do certificado (V#0001), nova checagem de
        pode_assinar_certificado, calibracao -> EMITIDA e auditoria
 
@@ -81,8 +82,8 @@ def processar(evento: dict, repositorio: Repositorio, s3, hoje: date | None = No
     ano, sequencial = numero.split("-")
     bucket = os.environ["BUCKET_CERTIFICADOS"]
     chave_pdf = f"certificados/{ano}/{sequencial}.pdf"
-    # Com Object Lock o S3 exige checksum no PUT; o SHA-256 tambem garante
-    # que o arquivo gravado e o mesmo cujo hash vai para o certificado
+    # Com Object Lock o S3 exige checksum no PUT; sem ele, o SHA-256 continua
+    # garantindo que o arquivo gravado e o mesmo cujo hash vai para o certificado
     gravado = s3.put_object(Bucket=bucket, Key=chave_pdf, Body=pdf,
                             ContentType="application/pdf",
                             ChecksumSHA256=base64.b64encode(resumo).decode(),

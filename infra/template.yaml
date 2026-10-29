@@ -3,7 +3,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   Schulz - certificados de calibracao (Projeto Aplicado III, Grupo 4).
   Arquitetura da AV2: Cognito, HTTP API, fn-api / fn-ingestao / fn-emissao,
-  DynamoDB em tabela unica, S3 (entrada, certificados com Object Lock e site)
+  DynamoDB em tabela unica, S3 (entrada, certificados versionados e site)
   e fn-site (Function URL no lugar do CloudFront, que o AWS Academy bloqueia).
   Dimensionado para a camada gratuita.
 
@@ -22,14 +22,6 @@ Parameters:
     Type: Number
     Default: 1
     Description: Limite mensal do orcamento da conta, em dolares.
-  DiasRetencaoCertificados:
-    Type: Number
-    Default: 1
-    MinValue: 1
-    Description: >
-      Retencao padrao do Object Lock (modo GOVERNANCE) dos PDFs. Na producao
-      seria COMPLIANCE pelo prazo legal; na PoC fica curto para a conta poder
-      ser limpa depois da avaliacao.
 
 Conditions:
   TemEmail: !Not [!Equals [!Ref EmailAlertas, ""]]
@@ -107,7 +99,7 @@ Resources:
             ExpirationInDays: 90
           # Originais e logs: um ano cobre o ciclo de calibracao e mantem o
           # bucket na camada gratuita (5 GB). O SHA-256 do original fica no
-          # DynamoDB e o certificado fica no bucket com Object Lock.
+          # DynamoDB e o certificado fica no bucket versionado.
           - Id: entrada-1-ano
             Status: Enabled
             Prefix: entrada/
@@ -117,8 +109,11 @@ Resources:
             Prefix: logs/
             ExpirationInDays: 365
 
-  # PDFs emitidos: versionamento + Object Lock (o certificado nao muda depois
-  # de emitido). Fica retido se a pilha for removida.
+  # PDFs emitidos, com versionamento: sobrescrever cria versao nova e a
+  # original fica. A fn-emissao guarda no DynamoDB o SHA-256 e o VersionId do
+  # PDF, e o download usa essa versao. Sem Object Lock: o AWS Academy nega
+  # s3:PutBucketObjectLockConfiguration (na AV2, COMPLIANCE pelo prazo legal).
+  # Fica retido se a pilha for removida.
   BucketCertificados:
     Type: AWS::S3::Bucket
     DeletionPolicy: Retain
@@ -126,13 +121,6 @@ Resources:
     Properties:
       BucketName: !Sub schulz-certificados-${AWS::AccountId}-${AWS::Region}
       VersioningConfiguration: { Status: Enabled }
-      ObjectLockEnabled: true
-      ObjectLockConfiguration:
-        ObjectLockEnabled: Enabled
-        Rule:
-          DefaultRetention:
-            Mode: GOVERNANCE
-            Days: !Ref DiasRetencaoCertificados
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
