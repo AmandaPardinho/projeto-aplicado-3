@@ -1,0 +1,6 @@
+# Dependencias para rodar a aplicacao localmente (iniciar_aplicacao_schulz.bat / app.py).
+# O DynamoDB e o S3 sao simulados em memoria pelo moto: nao precisa de conta AWS.
+openpyxl==3.1.5
+reportlab==4.1.0
+boto3==1.35.99
+moto[dynamodb,s3]==5.0.28

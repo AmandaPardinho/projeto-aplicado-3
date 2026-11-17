@@ -5,6 +5,42 @@ Empresa parceira: Schulz S.A. · Orientador: Prof. MSc. Hugo Menezes Barra
 
 Prova de conceito serverless na AWS (camada gratuita) que recebe o relatório bruto do Calypso exportado pela MMC, aplica o saneamento do Tema 01, calcula a incerteza pela metodologia GUM, avalia a conformidade com banda de guarda e emite o certificado em PDF com QR Code. A arquitetura é a da AV2: Cognito, API Gateway (HTTP API), três funções Lambda, DynamoDB em tabela única e S3.
 
+## Como executar (Windows)
+
+[![Windows - iniciar_aplicacao_schulz.bat](https://github.com/AmandaPardinho/projeto-aplicado-3/actions/workflows/windows-bat.yml/badge.svg)](https://github.com/AmandaPardinho/projeto-aplicado-3/actions/workflows/windows-bat.yml)
+
+**Pré-requisito:** Python 3.10 ou superior, instalado com a opção *Add python.exe to PATH* ([python.org/downloads](https://www.python.org/downloads/)). Não precisa de conta AWS: o banco e o armazenamento rodam simulados em memória.
+
+1. Baixe o repositório: `git clone https://github.com/AmandaPardinho/projeto-aplicado-3.git`, ou *Code › Download ZIP* e extraia.
+2. Dê dois cliques em **`iniciar_aplicacao_schulz.bat`**, na raiz. O script:
+   1. confere o Python 3.10+ no PATH;
+   2. cria e ativa o ambiente virtual `.venv`;
+   3. instala as bibliotecas do `requirements.txt` (só na primeira vez, ou quando o arquivo mudar);
+   4. sobe a API em `http://localhost:8000/` e abre a interface no navegador padrão.
+3. Para encerrar, feche a janela do script ou pressione `Ctrl+C`.
+
+Variações: `iniciar_aplicacao_schulz.bat 8080` usa outra porta; `iniciar_aplicacao_schulz.bat --verificar` testa o fluxo de ponta a ponta sem abrir o navegador e encerra.
+
+**Roteiro de uso:**
+
+| Passo | Usuário (tela de login) | O que fazer |
+|---|---|---|
+| 1. Envio | `tecnico.exemplo` | *Enviar relatório*: TAG `703.1208`, padrão `500.011`, temperatura e uma planilha da pasta [`exemplos/`](exemplos/) |
+| 2. Revisão | `revisor.exemplo` | *Calibrações* → abrir a calibração: média, erro, incerteza GUM e situação de cada característica |
+| 3. Emissão | `signatario.exemplo` | *Emitir certificado* → PDF com QR Code |
+| 4. Consulta | `consulta.usinagem` | *Consultar instrumento*: TAG `703.1208` ou o QR do certificado |
+
+| Planilha de exemplo | Resultado esperado |
+|---|---|
+| `1-aprovado.xlsx` | CONFORME; libera a emissão |
+| `2-reprovado.xlsx` | NÃO CONFORME: um diâmetro fora da tolerância e outro reprovado pela banda de guarda |
+| `3-com-sujeira.xlsx` | higienizada (data serial do Excel, hora com fração, espaços, número como texto com vírgula e unidade, `---`, formato Strict) e CONFORME |
+| `4-quarentena.xlsx` | recusada: medição ausente (`---`) na 2ª passagem; vai para a quarentena |
+
+Em Linux ou macOS, o equivalente ao `.bat` é: `python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt && python app.py --abrir-navegador`.
+
+`app.py` (raiz) é o ponto de entrada da aplicação. `legado-av3/app.py` é o MVP antigo da AV3, mantido só como histórico.
+
 ## Situação
 
 | Fase | Conteúdo | Situação |

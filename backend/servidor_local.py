@@ -25,6 +25,7 @@ import mimetypes
 import os
 import re
 import sys
+import threading
 from email.parser import BytesParser
 from email.policy import default as politica_email
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -244,22 +245,45 @@ class Manipulador(BaseHTTPRequestHandler):
         self._enviar(200, arquivo.read_bytes(), tipo)
 
 
+class Servidor(ThreadingHTTPServer):
+    # No Windows, SO_REUSEADDR deixa um segundo servidor ouvir a mesma porta
+    # sem erro (e as requisicoes caem em qualquer um); la, a porta ocupada
+    # precisa falhar na hora
+    allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
+
+
+def executar(porta: int = 8000, carregar_exemplo: bool = True, ao_subir=None) -> None:
+    """Sobe o servidor e bloqueia ate Ctrl+C (ou ate ao_subir chamar shutdown).
+
+    ao_subir(servidor) roda numa thread depois que a porta esta aberta.
+    """
+    os.environ["URL_APP"] = f"http://localhost:{porta}/"
+    with mock_aws():
+        preparar(carregar_exemplo=carregar_exemplo)
+        Manipulador.rotas = _rotas()
+        try:
+            servidor = Servidor(("127.0.0.1", porta), Manipulador)
+        except OSError as exc:
+            sys.exit(f"Nao foi possivel abrir a porta {porta} ({exc}). "
+                     "Feche a outra janela da aplicacao ou use --porta com outro numero.")
+        print(f"Servidor local em http://localhost:{porta}  (Ctrl+C para parar)", flush=True)
+        if ao_subir:
+            threading.Thread(target=ao_subir, args=(servidor,), daemon=True).start()
+        try:
+            servidor.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            servidor.server_close()
+
+
 def main():
     argumentos = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     argumentos.add_argument("--porta", type=int, default=8000)
     argumentos.add_argument("--vazio", action="store_true", help="não carregar a calibração de exemplo")
     opcoes = argumentos.parse_args()
-
-    os.environ["URL_APP"] = f"http://localhost:{opcoes.porta}/"
-    with mock_aws():
-        preparar(carregar_exemplo=not opcoes.vazio)
-        Manipulador.rotas = _rotas()
-        servidor = ThreadingHTTPServer(("127.0.0.1", opcoes.porta), Manipulador)
-        print(f"Servidor local em http://localhost:{opcoes.porta}  (Ctrl+C para parar)")
-        try:
-            servidor.serve_forever()
-        except KeyboardInterrupt:
-            pass
+    executar(opcoes.porta, carregar_exemplo=not opcoes.vazio)
 
 
 if __name__ == "__main__":

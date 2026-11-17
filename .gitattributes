@@ -1,0 +1,7 @@
+# O .bat fica gravado com CRLF no proprio repositorio (-text: o git nao converte).
+# Assim ele chega com quebra de linha do Windows por clone, por "Download ZIP"
+# ou por qualquer configuracao de core.autocrlf; com LF o cmd.exe pode errar
+# os rotulos do goto.
+*.bat -text
+*.xlsx binary
+*.xlsm binary

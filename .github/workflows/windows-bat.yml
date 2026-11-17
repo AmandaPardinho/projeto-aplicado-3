@@ -1,0 +1,115 @@
+# Roda o iniciar_aplicacao_schulz.bat num Windows limpo, do jeito que o
+# avaliador vai rodar.
+#   bat:          --verificar (fluxo de ponta a ponta com asserts) em Python 3.10 e 3.13
+#   modo-normal:  ZIP igual ao "Download ZIP" do GitHub, extraido em pasta com
+#                 espaco e acento, .bat sem argumentos (= duplo clique), espera
+#                 a interface responder em http://localhost:8000/
+#   py-launcher:  sem "python" no PATH, o .bat tem que achar o Python pelo "py -3"
+name: Windows - iniciar_aplicacao_schulz.bat
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  bat:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Primeira execucao (cria a .venv e instala as bibliotecas)
+        shell: cmd
+        run: iniciar_aplicacao_schulz.bat --verificar
+
+      - name: Segunda execucao (reaproveita a .venv)
+        shell: cmd
+        run: iniciar_aplicacao_schulz.bat --verificar
+
+  modo-normal:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Duplo clique a partir do ZIP, em pasta com espaco e acento
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "projeto.zip"
+          git archive --format=zip -o $zip HEAD          # o "Download ZIP" do GitHub e um git archive
+          $pasta = Join-Path $env:RUNNER_TEMP "João Avaliação\Área de Trabalho\projeto"
+          Expand-Archive $zip -DestinationPath $pasta
+          $bat = Join-Path $pasta "iniciar_aplicacao_schulz.bat"
+          if ((Get-Content $bat -Raw) -notmatch "`r`n") { throw "o .bat do ZIP perdeu o CRLF" }
+
+          $saida = Join-Path $env:RUNNER_TEMP "saida.txt"
+          # cmd /c "<bat>" sem argumentos, de outra pasta: e o que o Explorer faz no duplo clique.
+          # A linha inteira vai entre aspas: o cmd /c tira a primeira e a ultima aspa da linha
+          $processo = Start-Process cmd.exe -ArgumentList ('/c ""{0}" > "{1}" 2>&1"' -f $bat, $saida) `
+                        -WorkingDirectory $env:RUNNER_TEMP -PassThru -WindowStyle Hidden
+          $ok = $false
+          try {
+            for ($i = 0; $i -lt 150 -and -not $ok; $i++) {
+              Start-Sleep -Seconds 2
+              if ($processo.HasExited) { throw "o .bat encerrou antes de subir a API (codigo $($processo.ExitCode))" }
+              try {
+                $pagina = Invoke-WebRequest "http://127.0.0.1:8000/" -UseBasicParsing -TimeoutSec 3
+                $config = Invoke-WebRequest "http://127.0.0.1:8000/config.js" -UseBasicParsing -TimeoutSec 3
+                $ok = $pagina.Content -match 'js/app.js' -and $config.Content -match '"modo": "local"'
+              } catch { }
+            }
+            if (-not $ok) { throw "a interface nao respondeu em http://localhost:8000/ em 5 minutos" }
+            Write-Host "OK: interface respondendo em http://localhost:8000/ a partir de $pasta"
+          } finally {
+            taskkill /PID $processo.Id /T /F | Out-Null
+            Write-Host "----- saida do .bat -----"
+            Get-Content $saida -ErrorAction SilentlyContinue
+          }
+
+  py-launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sem "python" no PATH, so com o py launcher
+        shell: pwsh
+        run: |
+          if (-not (Get-Command py.exe -ErrorAction SilentlyContinue)) {
+            # Sem launcher no runner: instala o Python oficial com o launcher e SEM mexer no PATH,
+            # que e o caso do avaliador que nao marcou "Add python.exe to PATH"
+            $instalador = Join-Path $env:RUNNER_TEMP "python-instalador.exe"
+            Invoke-WebRequest "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile $instalador
+            Start-Process $instalador -ArgumentList "/quiet InstallAllUsers=1 Include_launcher=1 PrependPath=0" -Wait
+            $env:PATH = "C:\Windows;$env:PATH"
+          }
+          # Tira do PATH tudo que tenha python.exe; o py.exe (C:\Windows) fica
+          $env:PATH = ($env:PATH -split ';' | Where-Object {
+            $_ -and -not (Test-Path (Join-Path $_ 'python.exe')) }) -join ';'
+          if (Get-Command python.exe -ErrorAction SilentlyContinue) { throw "python.exe continua no PATH" }
+          if (-not (Get-Command py.exe -ErrorAction SilentlyContinue)) { throw "py launcher ausente: o cenario nao pode ser testado" }
+          py -3 -c "import sys; print('py -3 ->', sys.version); sys.exit(0 if sys.version_info >= (3, 10) else 1)"
+          if ($LASTEXITCODE -ne 0) { throw "py -3 nao aponta para um Python 3.10+" }
+          cmd /c "iniciar_aplicacao_schulz.bat --verificar"
+          if ($LASTEXITCODE -ne 0) { throw "falhou com o py launcher (codigo $LASTEXITCODE)" }
+
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r backend/requirements-dev.txt
+      - run: pytest
+        working-directory: backend
